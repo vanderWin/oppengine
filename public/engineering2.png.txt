@@ -1,0 +1,3 @@
+NOTE: This is a placeholder text file.
+Please replace this with your actual engineering2.png image file.
+The image should be placed at: public/engineering2.png
