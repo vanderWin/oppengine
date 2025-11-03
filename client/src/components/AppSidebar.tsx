@@ -1,4 +1,5 @@
-import { Home, BarChart2, TrendingUp, FileText, CheckCircle } from "lucide-react";
+import type { ElementType } from "react";
+import { CheckCircle } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -15,7 +16,7 @@ import { cn } from "@/lib/utils";
 interface Step {
   id: string;
   title: string;
-  icon: React.ElementType;
+  icon: ElementType | string;
   path: string;
   completed: boolean;
 }
@@ -29,9 +30,12 @@ export function AppSidebar({ currentPath, steps }: AppSidebarProps) {
   return (
     <Sidebar>
       <SidebarHeader className="p-6 border-b border-sidebar-border">
-        <div className="flex items-center gap-3">
+        <a
+          href="/"
+          className="flex items-center gap-3 rounded-md transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+        >
           <img 
-            src="/engineering2.png" 
+            src="/oppengine-animated.gif" 
             alt="OppEngine" 
             className="h-10 w-10 object-contain"
           />
@@ -39,7 +43,7 @@ export function AppSidebar({ currentPath, steps }: AppSidebarProps) {
             <h2 className="text-base font-semibold text-sidebar-foreground font-display">OppEngine</h2>
             <p className="text-xs text-muted-foreground">Opportunity Analysis</p>
           </div>
-        </div>
+        </a>
       </SidebarHeader>
       <SidebarContent>
         <SidebarGroup>
@@ -47,7 +51,17 @@ export function AppSidebar({ currentPath, steps }: AppSidebarProps) {
           <SidebarGroupContent>
             <SidebarMenu>
               {steps.map((step) => {
-                const Icon = step.icon;
+                const renderIcon = () => {
+                  if (typeof step.icon === "string") {
+                    return (
+                      <span className="material-symbols-outlined text-lg" aria-hidden="true">
+                        {step.icon}
+                      </span>
+                    );
+                  }
+                  const Icon = step.icon;
+                  return <Icon className="h-4 w-4" />;
+                };
                 const isActive = currentPath === step.path;
                 return (
                   <SidebarMenuItem key={step.id}>
@@ -61,7 +75,7 @@ export function AppSidebar({ currentPath, steps }: AppSidebarProps) {
                       data-testid={`nav-${step.id}`}
                     >
                       <a href={step.path}>
-                        <Icon className="h-4 w-4" />
+                        {renderIcon()}
                         <span className="flex-1">{step.title}</span>
                         {step.completed && (
                           <CheckCircle className="h-4 w-4 text-success" data-testid={`status-${step.id}-completed`} />

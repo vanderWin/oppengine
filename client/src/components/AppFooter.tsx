@@ -8,12 +8,20 @@ export function AppFooter() {
         minHeight: '100px'
       }}
     >
-      <img 
-        src="/logo.svg" 
-        alt="OppEngine Logo" 
-        className="max-h-[80px] max-w-[80%] object-contain"
-        style={{ filter: 'brightness(0) invert(1)' }}
-      />
+      <a
+        href="https://www.journeyfurther.com/?utm_source=oppengine&utm_medium=referral&utm_campaign=app_footer&utm_content=logo"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="flex h-full w-full items-center justify-center px-6"
+        aria-label="Visit Journey Further website"
+      >
+        <img
+          src="/logo.svg"
+          alt="Journey Further"
+          className="h-16 w-auto object-contain"
+          loading="lazy"
+        />
+      </a>
     </footer>
   );
 }

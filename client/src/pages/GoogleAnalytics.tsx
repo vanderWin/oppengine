@@ -5,7 +5,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { MetricCard } from "@/components/MetricCard";
-import { BarChart, Building2, RefreshCw, Search } from "lucide-react";
+import { Building2, RefreshCw, Search } from "lucide-react";
+import { AreaChart as AreaChartIcon } from "@nine-thirty-five/material-symbols-react/outlined";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -283,11 +284,16 @@ export default function GoogleAnalytics() {
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Google Analytics</h1>
-          <p className="text-muted-foreground mt-1">
-            Connect your Google Analytics account to fetch historic organic traffic data
-          </p>
+        <div className="flex items-start gap-3">
+          <span className="flex h-12 w-12 items-center justify-center rounded-md bg-primary/10 text-primary">
+            <AreaChartIcon className="h-6 w-6" />
+          </span>
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">Google Analytics</h1>
+            <p className="text-muted-foreground mt-1">
+              Connect your Google Analytics account to fetch historic organic traffic data
+            </p>
+          </div>
         </div>
         {isConnected && (
           <Button
@@ -305,7 +311,6 @@ export default function GoogleAnalytics() {
 
       <OAuthConnectionCard
         service="Google Analytics 4"
-        logo={<BarChart className="h-6 w-6 text-primary" />}
         description="Fetch organic session, transaction, and revenue data"
         isConnected={isConnected}
         connectedEmail={undefined}
@@ -553,7 +558,7 @@ export default function GoogleAnalytics() {
           <Button
             size="lg"
             onClick={() => navigate("/gsc")}
-            className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 animate-pulse gap-2"
+            className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 animate-cta-pulse gap-2 border-0"
           >
             <span className="material-symbols-outlined text-xl" aria-hidden="true">
               arrow_circle_down

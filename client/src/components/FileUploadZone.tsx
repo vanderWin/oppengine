@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import { Upload, File, X } from "lucide-react";
+import { File, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -90,7 +90,9 @@ export function FileUploadZone({
         {!selectedFile ? (
           <div className="flex flex-col items-center gap-4 text-center">
             <div className="flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
-              <Upload className="h-8 w-8 text-primary" />
+              <span className="material-symbols-outlined text-3xl text-primary" aria-hidden="true">
+                upload_file
+              </span>
             </div>
             <div>
               <p className="font-medium">

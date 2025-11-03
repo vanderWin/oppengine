@@ -14,6 +14,11 @@ interface CacheEntry {
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const cache = new Map<string, CacheEntry>();
 
+interface FetchOptions {
+  geoTargetConstants?: string[];
+  languageConstant?: string;
+}
+
 const DEFAULT_GEO_TARGETS = ["geoTargetConstants/2826"]; // United Kingdom
 const DEFAULT_LANGUAGE = "languageConstants/1000"; // English
 const MONTH_NAME_TO_INDEX: Record<string, number> = {
@@ -33,6 +38,33 @@ const MONTH_NAME_TO_INDEX: Record<string, number> = {
 
 function normalizeKeyword(keyword: string): string {
   return keyword ? keyword.trim().toLowerCase() : "";
+}
+
+function getGeoKey(geoTargetConstants?: string[]): string {
+  const targets =
+    geoTargetConstants && geoTargetConstants.length > 0
+      ? geoTargetConstants
+      : DEFAULT_GEO_TARGETS;
+  return [...targets].sort().join(",");
+}
+
+function buildCacheKey(keyword: string, geoTargetConstants?: string[]): string | null {
+  const normalized = normalizeKeyword(keyword);
+  if (!normalized) {
+    return null;
+  }
+  return `${getGeoKey(geoTargetConstants)}::${normalized}`;
+}
+
+function buildCacheKeyFromNormalized(
+  normalizedKeyword: string,
+  geoKey: string
+): string | null {
+  const normalized = normalizedKeyword.trim();
+  if (!normalized) {
+    return null;
+  }
+  return `${geoKey}::${normalized}`;
 }
 
 function isCacheEntryExpired(entry: CacheEntry): boolean {
@@ -89,7 +121,10 @@ function extractCloseVariants(result: any): string[] {
   return variants;
 }
 
-function cacheResultForAliases(result: any): boolean {
+function cacheResultForAliases(
+  result: any,
+  geoTargetConstants?: string[]
+): boolean {
   const canonical = typeof result?.text === "string" ? result.text.trim() : "";
   const canonicalNormalized = normalizeKeyword(canonical);
 
@@ -133,25 +168,28 @@ function cacheResultForAliases(result: any): boolean {
         ? averageMonthlySearches
         : undefined,
     };
-    setCachedSeasonalVolume(displayAlias, data);
+    setCachedSeasonalVolume(displayAlias, data, geoTargetConstants);
   });
 
   return true;
 }
 
-export function getCachedSeasonalVolume(keyword: string): SeasonalVolumeData | null {
-  const normalized = normalizeKeyword(keyword);
-  if (!normalized) {
+export function getCachedSeasonalVolume(
+  keyword: string,
+  geoTargetConstants?: string[]
+): SeasonalVolumeData | null {
+  const cacheKey = buildCacheKey(keyword, geoTargetConstants);
+  if (!cacheKey) {
     return null;
   }
 
-  const entry = cache.get(normalized);
+  const entry = cache.get(cacheKey);
   if (!entry) {
     return null;
   }
 
   if (isCacheEntryExpired(entry)) {
-    cache.delete(normalized);
+    cache.delete(cacheKey);
     return null;
   }
 
@@ -160,14 +198,15 @@ export function getCachedSeasonalVolume(keyword: string): SeasonalVolumeData | n
 
 export function setCachedSeasonalVolume(
   keyword: string,
-  data: SeasonalVolumeData
+  data: SeasonalVolumeData,
+  geoTargetConstants?: string[]
 ): void {
-  const normalized = normalizeKeyword(keyword);
-  if (!normalized) {
+  const cacheKey = buildCacheKey(keyword, geoTargetConstants);
+  if (!cacheKey) {
     return;
   }
 
-  cache.set(normalized, {
+  cache.set(cacheKey, {
     data,
     timestamp: Date.now(),
   });
@@ -231,21 +270,32 @@ async function createCustomer() {
   };
 }
 
-function buildHistoricalMetricsRequest(customerId: string, keywords: string[]) {
+function buildHistoricalMetricsRequest(
+  customerId: string,
+  keywords: string[],
+  options?: FetchOptions
+) {
+  const geoTargetConstants =
+    options?.geoTargetConstants && options.geoTargetConstants.length > 0
+      ? options.geoTargetConstants
+      : DEFAULT_GEO_TARGETS;
+  const language = options?.languageConstant ?? DEFAULT_LANGUAGE;
+
   return {
     customer_id: customerId,
     keywords,
-    geo_target_constants: DEFAULT_GEO_TARGETS,
-    language: DEFAULT_LANGUAGE,
+    geo_target_constants: geoTargetConstants,
+    language,
     keyword_plan_network: "GOOGLE_SEARCH",
     include_adult_keywords: false,
   };
 }
 
 export async function fetchSeasonalVolumeFromGoogleAds(
-  keyword: string
+  keyword: string,
+  options?: FetchOptions
 ): Promise<SeasonalVolumeData | null> {
-  const cached = getCachedSeasonalVolume(keyword);
+  const cached = getCachedSeasonalVolume(keyword, options?.geoTargetConstants);
   if (cached) {
     console.log(`[GoogleAds] Cache hit for keyword: ${keyword}`);
     return cached;
@@ -260,7 +310,7 @@ export async function fetchSeasonalVolumeFromGoogleAds(
   try {
     const { customer, customerId } = await createCustomer();
 
-    const request = buildHistoricalMetricsRequest(customerId, [keyword]);
+    const request = buildHistoricalMetricsRequest(customerId, [keyword], options);
     const response =
       await customer.keywordPlanIdeas.generateKeywordHistoricalMetrics(
         request as any
@@ -276,10 +326,13 @@ export async function fetchSeasonalVolumeFromGoogleAds(
     }
 
     for (const result of resultsArray) {
-      cacheResultForAliases(result);
+      cacheResultForAliases(result, options?.geoTargetConstants);
     }
 
-    const matched = getCachedSeasonalVolume(keyword);
+    const matched = getCachedSeasonalVolume(
+      keyword,
+      options?.geoTargetConstants
+    );
     if (matched) {
       console.log(
         `[GoogleAds] Successfully fetched seasonal data for: ${keyword}`
@@ -292,7 +345,10 @@ export async function fetchSeasonalVolumeFromGoogleAds(
     const canonical =
       typeof firstResult?.text === "string" ? firstResult.text.trim() : "";
     if (canonical) {
-      const cachedCanonical = getCachedSeasonalVolume(canonical);
+      const cachedCanonical = getCachedSeasonalVolume(
+        canonical,
+        options?.geoTargetConstants
+      );
       if (cachedCanonical) {
         return cachedCanonical;
       }
@@ -310,12 +366,16 @@ export async function fetchSeasonalVolumeFromGoogleAds(
 }
 
 export async function batchFetchSeasonalVolumes(
-  keywords: string[]
+  keywords: string[],
+  options?: FetchOptions
 ): Promise<Map<string, SeasonalVolumeData>> {
   const results = new Map<string, SeasonalVolumeData>();
   if (!keywords || !Array.isArray(keywords) || keywords.length === 0) {
     return results;
   }
+
+  const geoTargetConstants = options?.geoTargetConstants;
+  const geoKey = getGeoKey(geoTargetConstants);
 
   const normalizedToOriginals = new Map<string, string[]>();
   for (const original of keywords) {
@@ -331,23 +391,29 @@ export async function batchFetchSeasonalVolumes(
 
   // Populate results with existing cache entries
   for (const original of keywords) {
-    const cached = getCachedSeasonalVolume(original);
+    const cached = getCachedSeasonalVolume(original, geoTargetConstants);
     if (cached) {
       results.set(original, cached);
     }
   }
 
-  const uncachedNormalized = Array.from(normalizedToOriginals.keys()).filter((normalized) => {
-    const entry = cache.get(normalized);
-    if (!entry) {
-      return true;
+  const uncachedNormalized = Array.from(normalizedToOriginals.keys()).filter(
+    (normalized) => {
+      const cacheKey = buildCacheKeyFromNormalized(normalized, geoKey);
+      if (!cacheKey) {
+        return false;
+      }
+      const entry = cache.get(cacheKey);
+      if (!entry) {
+        return true;
+      }
+      if (isCacheEntryExpired(entry)) {
+        cache.delete(cacheKey);
+        return true;
+      }
+      return false;
     }
-    if (isCacheEntryExpired(entry)) {
-      cache.delete(normalized);
-      return true;
-    }
-    return false;
-  });
+  );
   const requests = uncachedNormalized
     .map((normalized) => normalizedToOriginals.get(normalized)?.[0])
     .filter((kw): kw is string => typeof kw === "string");
@@ -377,7 +443,11 @@ export async function batchFetchSeasonalVolumes(
         continue;
       }
 
-      const request = buildHistoricalMetricsRequest(customerId, batch);
+      const request = buildHistoricalMetricsRequest(
+        customerId,
+        batch,
+        options
+      );
       const response =
         await customer.keywordPlanIdeas.generateKeywordHistoricalMetrics(
           request as any
@@ -388,7 +458,7 @@ export async function batchFetchSeasonalVolumes(
         : [];
 
       for (const result of batchResults) {
-        cacheResultForAliases(result);
+        cacheResultForAliases(result, geoTargetConstants);
       }
     }
   } catch (error) {
@@ -396,7 +466,7 @@ export async function batchFetchSeasonalVolumes(
   }
 
   for (const original of keywords) {
-    const cached = getCachedSeasonalVolume(original);
+    const cached = getCachedSeasonalVolume(original, geoTargetConstants);
     if (cached) {
       results.set(original, cached);
     }

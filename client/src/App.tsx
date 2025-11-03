@@ -1,4 +1,10 @@
 import { Switch, Route, useLocation } from "wouter";
+import Landing from "@/pages/Landing";
+import GoogleAnalytics from "@/pages/GoogleAnalytics";
+import SearchConsole from "@/pages/SearchConsole";
+import UpliftCalculator from "@/pages/UpliftCalculator";
+import Prophet from "@/pages/Prophet";
+import ResultsDashboard from "@/pages/ResultsDashboard";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
@@ -6,21 +12,22 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { AppFooter } from "@/components/AppFooter";
-import { Home, BarChart2, TrendingUp, FileText } from "lucide-react";
-import Landing from "@/pages/Landing";
-import GoogleAnalytics from "@/pages/GoogleAnalytics";
-import SearchConsole from "@/pages/SearchConsole";
-import UpliftCalculator from "@/pages/UpliftCalculator";
-import ResultsDashboard from "@/pages/ResultsDashboard";
+import {
+  AreaChart,
+  SearchInsights,
+  Cadence,
+  Preview,
+} from "@nine-thirty-five/material-symbols-react/outlined";
 
 function Router() {
   const [location] = useLocation();
 
   const steps = [
-    { id: "ga", title: "Google Analytics", icon: Home, path: "/ga", completed: false },
-    { id: "gsc", title: "Search Console", icon: BarChart2, path: "/gsc", completed: false },
-    { id: "uplift", title: "Uplift Calculator", icon: TrendingUp, path: "/uplift", completed: false },
-    { id: "results", title: "Results Dashboard", icon: FileText, path: "/results", completed: false },
+    { id: "ga", title: "Google Analytics", icon: AreaChart, path: "/ga", completed: false },
+    { id: "gsc", title: "Search Console", icon: SearchInsights, path: "/gsc", completed: false },
+    { id: "prophet", title: "Prophet Projections", icon: Preview, path: "/prophet", completed: false },
+    { id: "uplift", title: "Uplift Calculator", icon: Cadence, path: "/uplift", completed: false },
+    { id: "results", title: "Results Dashboard", icon: "batch_prediction", path: "/results", completed: false },
   ];
 
   const sidebarStyle = {
@@ -28,7 +35,6 @@ function Router() {
     "--sidebar-width-icon": "4rem",
   };
 
-  // Show landing page on root path, otherwise show app
   if (location === "/") {
     return (
       <div className="flex flex-col min-h-screen">
@@ -40,7 +46,6 @@ function Router() {
     );
   }
 
-  // Show app with sidebar for all other routes
   return (
     <SidebarProvider style={sidebarStyle as React.CSSProperties}>
       <div className="flex h-screen w-full">
@@ -55,6 +60,7 @@ function Router() {
                 <Route path="/ga" component={GoogleAnalytics} />
                 <Route path="/gsc" component={SearchConsole} />
                 <Route path="/uplift" component={UpliftCalculator} />
+                <Route path="/prophet" component={Prophet} />
                 <Route path="/results" component={ResultsDashboard} />
                 <Route>
                   <div className="flex items-center justify-center h-full">

@@ -1,27 +1,33 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { BarChart2, TrendingUp, Target, Zap, CheckCircle } from "lucide-react";
+import { CheckCircle } from "lucide-react";
+import {
+  AreaChart,
+  SearchInsights,
+  Cadence,
+  Preview,
+} from "@nine-thirty-five/material-symbols-react/outlined";
 
 export default function Landing() {
   const features = [
     {
-      icon: BarChart2,
+      icon: AreaChart,
       title: "Google Analytics Integration",
       description: "Connect your GA4 account to analyze historic organic traffic patterns and revenue data"
     },
     {
-      icon: TrendingUp,
+      icon: SearchInsights,
       title: "Search Console Analysis",
       description: "Automatically separate brand and non-brand queries with CTR curve generation"
     },
     {
-      icon: Target,
+      icon: Cadence,
       title: "Uplift Calculator",
       description: "Upload keyword research and calculate ranking improvement opportunities"
     },
     {
-      icon: Zap,
-      title: "Prophet Forecasting",
+      icon: Preview,
+      title: "Prophet Projections",
       description: "Advanced traffic predictions with confidence intervals and revenue projections"
     }
   ];
@@ -31,7 +37,7 @@ export default function Landing() {
     "Define brand regex to separate query types",
     "Upload target keyword research file",
     "Configure uplift parameters and confidence levels",
-    "View comprehensive forecasts and export results to Excel"
+    "View comprehensive forecasts and export results to CSV or Excel"
   ];
 
   return (
@@ -40,7 +46,7 @@ export default function Landing() {
         <div className="text-center space-y-6 mb-12">
           <div className="flex items-center justify-center gap-3 mb-4">
             <img 
-              src="/engineering2.png" 
+              src="/oppengine-animated.gif" 
               alt="OppEngine" 
               className="h-24 w-24 object-contain"
             />
@@ -54,15 +60,18 @@ export default function Landing() {
           <div className="flex justify-center pt-4">
             <Button
               size="lg"
-              className="gap-2 text-lg px-8 py-6"
+              className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 animate-cta-pulse gap-2 text-lg px-8 py-6 border-0 focus-visible:ring-emerald-500"
               onClick={() => window.location.href = "/ga"}
               data-testid="button-get-started"
             >
               Get Started
+              <span className="material-symbols-outlined text-xl" aria-hidden="true">
+                arrow_circle_right
+              </span>
             </Button>
           </div>
           <p className="text-sm text-muted-foreground">
-            No account required • Session-based data • Privacy-first
+            No account required {"\u2022"} Session-based data {"\u2022"} Privacy-first
           </p>
         </div>
 
@@ -115,7 +124,7 @@ export default function Landing() {
                 <span className="font-semibold">Free to Use</span>
               </div>
               <p className="text-sm text-muted-foreground">
-                No subscription required • Works with your own Google accounts • Session-based OAuth tokens
+                No subscription required {"\u2022"} Works with your own Google accounts {"\u2022"} Session-based OAuth tokens
               </p>
             </CardContent>
           </Card>
@@ -124,3 +133,4 @@ export default function Landing() {
     </div>
   );
 }
+

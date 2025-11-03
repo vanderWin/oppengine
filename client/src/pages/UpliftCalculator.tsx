@@ -1,30 +1,189 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useLocation } from "wouter";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import { FileUploadZone } from "@/components/FileUploadZone";
-import { ParameterPanel } from "@/components/ParameterPanel";
+import { ParameterPanel, DEFAULT_CTR_VALUES } from "@/components/ParameterPanel";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { CheckCircle, FileText, TrendingUp, Loader2, Bug } from "lucide-react";
+import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { CheckCircle, TrendingUp, Loader2 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
-import type { UpliftParameters, ProjectionResults } from "@shared/schema";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import type { UpliftParameters, ProjectionResults, GSCReportResponse } from "@shared/schema";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line } from "recharts";
 import { Button } from "@/components/ui/button";
+
+interface GoogleStatus {
+  gsc: {
+    reportSummary: {
+      brandTerms: string[];
+    } | null;
+  };
+}
+
+type SearchVolumeRegion = "UK" | "US";
+
+interface UpliftPersistedState {
+  keywordsUploaded: boolean;
+  availableColumns: string[];
+  csvData: any[];
+  results: ProjectionResults | null;
+  currentParameters: UpliftParameters | null;
+  searchVolumeRegion?: SearchVolumeRegion;
+  lastCalculatedSignature?: string | null;
+}
+
+const UPLIFT_STORAGE_KEY = "uplift/state";
+
+function readUpliftStorage(): UpliftPersistedState | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const raw = window.sessionStorage.getItem(UPLIFT_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as UpliftPersistedState;
+  } catch {
+    return null;
+  }
+}
+
+function writeUpliftStorage(
+  updater: (previous: UpliftPersistedState | null) => UpliftPersistedState | null,
+): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  const previous = readUpliftStorage();
+  const next = updater(previous);
+  if (!next) {
+    window.sessionStorage.removeItem(UPLIFT_STORAGE_KEY);
+    return;
+  }
+  window.sessionStorage.setItem(UPLIFT_STORAGE_KEY, JSON.stringify(next));
+}
 
 export default function UpliftCalculator() {
   const [, navigate] = useLocation();
-  const [keywordsUploaded, setKeywordsUploaded] = useState(false);
+  const queryClient = useQueryClient();
+  const [rehydratedState] = useState<UpliftPersistedState | null>(() => readUpliftStorage());
+  const cachedState =
+    queryClient.getQueryData<UpliftPersistedState>(["uplift/state"]) ?? rehydratedState ?? null;
+  const [keywordsUploaded, setKeywordsUploaded] = useState(cachedState?.keywordsUploaded ?? false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [csvData, setCsvData] = useState<any[]>([]);
-  const [availableColumns, setAvailableColumns] = useState<string[]>([]);
-  const [results, setResults] = useState<ProjectionResults | null>(null);
-  const [currentParameters, setCurrentParameters] = useState<UpliftParameters | null>(null);
+  const [csvData, setCsvData] = useState<any[]>(cachedState?.csvData ?? []);
+  const [availableColumns, setAvailableColumns] = useState<string[]>(cachedState?.availableColumns ?? []);
+  const [results, setResults] = useState<ProjectionResults | null>(cachedState?.results ?? null);
+  const [currentParameters, setCurrentParameters] = useState<UpliftParameters | null>(cachedState?.currentParameters ?? null);
+  const [searchVolumeRegion, setSearchVolumeRegion] = useState<SearchVolumeRegion>(cachedState?.searchVolumeRegion ?? "UK");
   const hasCalculatedOnce = useRef(false);
   const lastCalculatedParams = useRef<string | null>(null);
   const { toast } = useToast();
+  const skipCsvResetOnHydrate = useRef(Boolean(cachedState?.csvData?.length));
+
+  useEffect(() => {
+    if (rehydratedState) {
+      queryClient.setQueryData<UpliftPersistedState>(["uplift/state"], rehydratedState);
+    }
+  }, [queryClient, rehydratedState]);
+
+  useEffect(() => {
+    if (cachedState) {
+      const signature =
+        cachedState.lastCalculatedSignature ??
+        (cachedState.currentParameters
+          ? JSON.stringify({
+              params: cachedState.currentParameters,
+              region: cachedState.searchVolumeRegion ?? "UK",
+            })
+          : null);
+      if (signature) {
+        lastCalculatedParams.current = signature;
+      }
+      if (cachedState.results) {
+        hasCalculatedOnce.current = true;
+      }
+    }
+  }, [cachedState]);
+
+  const { data: status } = useQuery<GoogleStatus>({
+    queryKey: ["/api/google/status"],
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
+  });
+
+  const brandTerms = useMemo(() => status?.gsc?.reportSummary?.brandTerms ?? [], [status?.gsc?.reportSummary]);
+
+  const {
+    data: gscReport,
+    isLoading: isLoadingGSCReport,
+    isError: hasGSCReportError,
+  } = useQuery<GSCReportResponse>({
+    queryKey: ["/api/google/gsc/report", brandTerms.join("|") || "none"],
+    enabled: Boolean(status?.gsc?.reportSummary),
+    queryFn: async () => {
+      const response = await apiRequest("POST", "/api/google/gsc/report", { brandTerms });
+      return (await response.json()) as GSCReportResponse;
+    },
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
+  });
+
+  const nonBrandCtrData = useMemo(
+    () =>
+      (gscReport?.nonBrandCtrByPosition ?? []).map((row) => ({
+        position: Number(row.position.toFixed(1)),
+        ctr: row.ctr,
+        clicks: row.clicks,
+        impressions: row.impressions,
+      })),
+    [gscReport?.nonBrandCtrByPosition],
+  );
+
+  const percentFormatter = useMemo(() => new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }), []);
+
+  const viridisPalette = useMemo(
+    () => ["#440154", "#482878", "#3E4989", "#31688E", "#26828E", "#1F9E89", "#35B779", "#6DCD59", "#B4DE2C", "#FDE725", "#F68F6A", "#9AE5D0"],
+    [],
+  );
+
+  const ctrOverrides = useMemo(() => {
+    if (!gscReport?.nonBrandCtrByPosition || gscReport.nonBrandCtrByPosition.length === 0) {
+      return null;
+    }
+    const values = [...DEFAULT_CTR_VALUES];
+    gscReport.nonBrandCtrByPosition.forEach((row) => {
+      const index = Math.round(row.position) - 1;
+      if (index >= 0 && index < values.length && Number.isFinite(row.ctr) && row.ctr > 0) {
+        values[index] = row.ctr;
+      }
+    });
+    return values;
+  }, [gscReport?.nonBrandCtrByPosition]);
+
+  const sortedCategoryKeys = useMemo(() => {
+    if (!results?.categoryUpliftByMonth || results.categoryUpliftByMonth.length === 0) {
+      return [] as string[];
+    }
+    const totals = new Map<string, number>();
+    results.categoryUpliftByMonth.forEach(({ category, uplift }) => {
+      totals.set(category, (totals.get(category) ?? 0) + uplift);
+    });
+    return Array.from(totals.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([category]) => category);
+  }, [results?.categoryUpliftByMonth]);
 
   const parseCSV = async (file: File) => {
     return new Promise<void>((resolve, reject) => {
@@ -75,10 +234,19 @@ export default function UpliftCalculator() {
     });
   };
 
-  const calculateMutation = useMutation({
-    mutationFn: async (parameters: UpliftParameters) => {
-      const response = await apiRequest("POST", "/api/uplift/calculate", { csvData, parameters });
-      return response.json() as Promise<ProjectionResults>;
+  type CalculationPayload = {
+    parameters: UpliftParameters;
+    searchVolumeRegion: SearchVolumeRegion;
+  };
+
+  const calculateMutation = useMutation<ProjectionResults, Error, CalculationPayload>({
+    mutationFn: async ({ parameters, searchVolumeRegion }: CalculationPayload) => {
+      const response = await apiRequest("POST", "/api/uplift/calculate", {
+        csvData,
+        parameters,
+        searchVolumeRegion,
+      });
+      return (await response.json()) as ProjectionResults;
     },
     onSuccess: (data: ProjectionResults) => {
       setResults(data);
@@ -98,6 +266,10 @@ export default function UpliftCalculator() {
 
   // Reset calculation flag when new CSV is uploaded
   useEffect(() => {
+    if (skipCsvResetOnHydrate.current) {
+      skipCsvResetOnHydrate.current = false;
+      return;
+    }
     if (csvData.length > 0) {
       hasCalculatedOnce.current = false;
       lastCalculatedParams.current = null;
@@ -110,15 +282,18 @@ export default function UpliftCalculator() {
       return;
     }
 
-    const paramsString = JSON.stringify(currentParameters);
-    
-    // Only calculate if parameters have actually changed
-    if (lastCalculatedParams.current !== paramsString) {
-      lastCalculatedParams.current = paramsString;
+    const paramsSignature = JSON.stringify({
+      params: currentParameters,
+      region: searchVolumeRegion,
+    });
+
+    // Only calculate if parameters or region have changed
+    if (lastCalculatedParams.current !== paramsSignature) {
+      lastCalculatedParams.current = paramsSignature;
       hasCalculatedOnce.current = true;
-      calculateMutation.mutate(currentParameters);
+      calculateMutation.mutate({ parameters: currentParameters, searchVolumeRegion });
     }
-  }, [csvData, currentParameters, calculateMutation, calculateMutation.isPending]);
+  }, [csvData, currentParameters, searchVolumeRegion, calculateMutation, calculateMutation.isPending]);
 
   // Memoize callback to prevent infinite loops
   const handleParametersChange = useCallback((params: UpliftParameters) => {
@@ -130,6 +305,28 @@ export default function UpliftCalculator() {
       return params;
     });
   }, []);
+
+  useEffect(() => {
+    const snapshot: UpliftPersistedState = {
+      keywordsUploaded,
+      availableColumns,
+      csvData,
+      results,
+      currentParameters,
+      searchVolumeRegion,
+      lastCalculatedSignature: lastCalculatedParams.current,
+    };
+    queryClient.setQueryData<UpliftPersistedState>(["uplift/state"], snapshot);
+    writeUpliftStorage(() => snapshot);
+  }, [
+    queryClient,
+    keywordsUploaded,
+    availableColumns,
+    csvData,
+    results,
+    currentParameters,
+    searchVolumeRegion,
+  ]);
 
   return (
     <div className="space-y-6">
@@ -168,28 +365,113 @@ export default function UpliftCalculator() {
                   </p>
                 </div>
               )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>CTR Curve</CardTitle>
-              <CardDescription>
-                CTR data from Search Console analysis
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="text-center py-6 text-muted-foreground">
-                <FileText className="h-12 w-12 mx-auto mb-2 opacity-50" />
-                <p className="text-sm">Complete Search Console step to import CTR curve</p>
+              <div className="mt-6">
+                <h3 className="text-sm font-medium text-foreground">Search Volume Region</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Choose which market to use for Google Ads search volume lookups.
+                </p>
+                <RadioGroup
+                  className="mt-3 grid gap-2 sm:grid-cols-2"
+                  value={searchVolumeRegion}
+                  onValueChange={(value) => setSearchVolumeRegion(value as SearchVolumeRegion)}
+                  data-testid="search-volume-region"
+                >
+                  <div className="flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2">
+                    <RadioGroupItem value="UK" id="search-volume-uk" />
+                    <Label htmlFor="search-volume-uk" className="text-sm font-medium leading-none">
+                      United Kingdom
+                    </Label>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-md border border-input bg-background px-3 py-2">
+                    <RadioGroupItem value="US" id="search-volume-us" />
+                    <Label htmlFor="search-volume-us" className="text-sm font-medium leading-none">
+                      United States
+                    </Label>
+                  </div>
+                </RadioGroup>
               </div>
             </CardContent>
           </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>CTR Curve</CardTitle>
+                <CardDescription>
+                  CTR data from Search Console analysis
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="h-64">
+                {isLoadingGSCReport ? (
+                  <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                    Loading CTR benchmarks...
+                  </div>
+                ) : hasGSCReportError || nonBrandCtrData.length === 0 ? (
+                  <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+                    <span className="material-symbols-outlined text-3xl text-muted-foreground opacity-80" aria-hidden="true">
+                      running_with_errors
+                    </span>
+                    <p className="text-sm text-center px-4">
+                      Complete the Search Console phase to import non-brand CTR benchmarks.
+                    </p>
+                  </div>
+                ) : (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={nonBrandCtrData}>
+                      <CartesianGrid strokeDasharray="3 3" />
+                      <XAxis
+                        dataKey="position"
+                        type="number"
+                        domain={["dataMin", "dataMax"]}
+                        tickFormatter={(value) => `${value}`}
+                        allowDecimals={false}
+                      />
+                      <YAxis tickFormatter={(value) => `${percentFormatter.format(value * 100)}%`} />
+                      <Tooltip
+                        content={({ active, payload, label }) => {
+                          if (!active || !payload || payload.length === 0) {
+                            return null;
+                          }
+                          const point = payload[0].payload as {
+                            ctr: number;
+                            clicks: number;
+                            impressions: number;
+                          };
+                          return (
+                            <div className="rounded-md border bg-background px-3 py-2 text-sm shadow-sm">
+                              <div className="font-semibold">Position #{label}</div>
+                              <div className="text-muted-foreground">
+                                CTR: {percentFormatter.format(point.ctr * 100)}%
+                              </div>
+                              <div className="text-muted-foreground">
+                                Clicks: {point.clicks.toLocaleString()}
+                              </div>
+                              <div className="text-muted-foreground">
+                                Impressions: {point.impressions.toLocaleString()}
+                              </div>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="ctr"
+                        stroke="#2563EB"
+                        strokeWidth={2}
+                        dot={{ r: 3 }}
+                        name="CTR"
+                        isAnimationActive={false}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                )}
+              </CardContent>
+            </Card>
 
           {availableColumns.length > 0 && (
             <ParameterPanel
               availableColumns={availableColumns}
               onParametersChange={handleParametersChange}
+              ctrOverrides={ctrOverrides ?? undefined}
             />
           )}
         </div>
@@ -248,7 +530,6 @@ export default function UpliftCalculator() {
                   </div>
                 </CardContent>
               </Card>
-
               <Card>
                 <CardHeader>
                   <CardTitle>Monthly Projections</CardTitle>
@@ -306,8 +587,8 @@ export default function UpliftCalculator() {
                         labelStyle={{ color: 'hsl(var(--foreground))' }}
                       />
                       <Legend />
-                      <Bar dataKey="Baseline" stackId="a" fill="hsl(var(--primary))" opacity={0.5} />
-                      <Bar dataKey="Uplift" stackId="a" fill="hsl(var(--primary))" />
+                        <Bar dataKey="Baseline" stackId="a" fill="#2b0573" opacity={0.85} name="Baseline" />
+                        <Bar dataKey="Uplift" stackId="a" fill="#AAA0FF" name="Uplift" />
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
@@ -343,21 +624,17 @@ export default function UpliftCalculator() {
                         labelStyle={{ color: 'hsl(var(--foreground))' }}
                       />
                       <Legend />
-                      {Array.from(new Set(results.categoryUpliftByMonth.map(item => item.category))).map((category, i) => {
-                        const colors = [
-                          'hsl(262, 83%, 58%)',
-                          'hsl(262, 83%, 48%)',
-                          'hsl(262, 83%, 38%)',
-                          'hsl(262, 83%, 68%)',
-                          'hsl(220, 70%, 50%)',
-                          'hsl(30, 70%, 50%)',
-                          'hsl(150, 70%, 50%)',
-                          'hsl(340, 70%, 50%)',
-                        ];
-                        return (
-                          <Bar key={category} dataKey={category} stackId="a" fill={colors[i % colors.length]} />
-                        );
-                      })}
+                      {(sortedCategoryKeys.length > 0
+                        ? sortedCategoryKeys
+                        : Array.from(new Set(results.categoryUpliftByMonth.map(item => item.category)))
+                      ).map((category, i) => (
+                        <Bar
+                          key={category}
+                          dataKey={category}
+                          stackId="a"
+                          fill={viridisPalette[i % viridisPalette.length]}
+                        />
+                      ))}
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
@@ -408,6 +685,21 @@ export default function UpliftCalculator() {
                 </CardContent>
               </Card>
 
+              {results && !calculateMutation.isPending && (
+                <div className="flex justify-end pt-6">
+                  <Button
+                    size="lg"
+                    onClick={() => navigate("/prophet")}
+                    className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 animate-cta-pulse gap-2 border-0"
+                  >
+                    <span className="material-symbols-outlined text-xl" aria-hidden="true">
+                      arrow_circle_right
+                    </span>
+                    Proceed to Next Phase
+                  </Button>
+                </div>
+              )}
+              <hr></hr>
               <Card>
                 <CardHeader>
                   <CardTitle>Download Results</CardTitle>
@@ -454,7 +746,7 @@ export default function UpliftCalculator() {
                 <Card>
                   <CardHeader>
                     <div className="flex items-center gap-2">
-                      <Bug className="h-5 w-5 text-muted-foreground" />
+                      <span className="material-symbols-outlined text-muted-foreground text-base" aria-hidden="true">troubleshoot</span>
                       <CardTitle>Seasonal Volume Debug Data</CardTitle>
                     </div>
                     <CardDescription>
@@ -462,8 +754,8 @@ export default function UpliftCalculator() {
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <div className="overflow-x-auto">
-                      <Table>
+                    <div className="max-h-[28rem] overflow-auto pr-2">
+                      <Table className="min-w-[1100px]">
                         <TableHeader>
                           <TableRow>
                             <TableHead className="w-[250px]">Keyword</TableHead>
@@ -487,7 +779,7 @@ export default function UpliftCalculator() {
                             <TableRow key={idx} data-testid={`debug-row-${idx}`}>
                               <TableCell className="font-medium">{debug.keyword}</TableCell>
                               <TableCell>
-                                <Badge 
+                                <Badge
                                   variant={debug.source === "cache" ? "default" : "secondary"}
                                   data-testid={`source-badge-${idx}`}
                                 >
@@ -495,7 +787,11 @@ export default function UpliftCalculator() {
                                 </Badge>
                               </TableCell>
                               {debug.monthlyVolumes.map((volume, monthIdx) => (
-                                <TableCell key={monthIdx} className="text-right" data-testid={`volume-${idx}-${monthIdx}`}>
+                                <TableCell
+                                  key={monthIdx}
+                                  className="text-right"
+                                  data-testid={`volume-${idx}-${monthIdx}`}
+                                >
                                   {volume.toLocaleString()}
                                 </TableCell>
                               ))}
@@ -505,7 +801,7 @@ export default function UpliftCalculator() {
                       </Table>
                     </div>
                     <p className="text-sm text-muted-foreground mt-4">
-                      <strong>Source:</strong> "Google Ads" indicates data was retrieved from the cache (mock data until API configured). 
+                      <strong>Source:</strong> "Google Ads" indicates data was matched to a Google Ads result. 
                       "Fallback" means the calculator used the uploaded average volume instead.
                     </p>
                   </CardContent>
@@ -524,20 +820,6 @@ export default function UpliftCalculator() {
         </div>
       </div>
 
-      {results && !calculateMutation.isPending && (
-        <div className="flex justify-end pt-8">
-          <Button
-            size="lg"
-            onClick={() => navigate("/results")}
-            className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 animate-pulse gap-2"
-          >
-            <span className="material-symbols-outlined text-xl" aria-hidden="true">
-              arrow_circle_down
-            </span>
-            Proceed to Next Phase
-          </Button>
-        </div>
-      )}
     </div>
   );
 }

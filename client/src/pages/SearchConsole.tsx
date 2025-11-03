@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { MetricCard } from "@/components/MetricCard";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Search, Globe, RefreshCw } from "lucide-react";
+import { SearchInsights as SearchInsightsIcon } from "@nine-thirty-five/material-symbols-react/outlined";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -343,11 +344,16 @@ export default function SearchConsole() {
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Google Search Console</h1>
-          <p className="text-muted-foreground mt-1">
-            Split organic clicks into brand, non-brand, and anonymous demand over the last 16 months
-          </p>
+        <div className="flex items-start gap-3">
+          <span className="flex h-12 w-12 items-center justify-center rounded-md bg-primary/10 text-primary">
+            <SearchInsightsIcon className="h-6 w-6" />
+          </span>
+          <div>
+            <h1 className="text-3xl font-bold tracking-tight">Google Search Console</h1>
+            <p className="text-muted-foreground mt-1">
+              Split organic clicks into brand, non-brand, and anonymous demand over the last 16 months
+            </p>
+          </div>
         </div>
         {isConnected && (
           <Button
@@ -365,7 +371,6 @@ export default function SearchConsole() {
 
       <OAuthConnectionCard
         service="Google Search Console"
-        logo={<Search className="h-6 w-6 text-primary" />}
         description="Fetch search analytics data for the last 16 months"
         isConnected={isConnected}
         connectedEmail={undefined}
@@ -677,8 +682,8 @@ export default function SearchConsole() {
         <div className="flex justify-end pt-8">
           <Button
             size="lg"
-            onClick={() => navigate("/uplift")}
-            className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 animate-pulse gap-2"
+            onClick={() => navigate("/prophet")}
+            className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 animate-cta-pulse gap-2 border-0"
           >
             <span className="material-symbols-outlined text-xl" aria-hidden="true">
               arrow_circle_down

@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 
 interface OAuthConnectionCardProps {
   service: string;
-  logo: React.ReactNode;
+  logo?: React.ReactNode;
   description: string;
   isConnected: boolean;
   connectedEmail?: string;
@@ -30,9 +30,11 @@ export function OAuthConnectionCard({
       <CardHeader>
         <div className="flex items-start justify-between">
           <div className="flex items-center gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-md bg-muted">
-              {logo}
-            </div>
+            {logo && (
+              <div className="flex h-12 w-12 items-center justify-center rounded-md bg-muted">
+                {logo}
+              </div>
+            )}
             <div>
               <CardTitle>{service}</CardTitle>
               <CardDescription>{description}</CardDescription>

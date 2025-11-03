@@ -10,9 +10,10 @@ import type { UpliftParameters, DifficultyLevel } from "@shared/schema";
 interface ParameterPanelProps {
   availableColumns: string[];
   onParametersChange: (params: UpliftParameters) => void;
+  ctrOverrides?: number[] | null;
 }
 
-const DEFAULT_CTR_VALUES = [
+export const DEFAULT_CTR_VALUES = [
   0.2696, 0.2030, 0.1489, 0.1114, 0.0847,
   0.0514, 0.0464, 0.0372, 0.0255, 0.0197,
   0.005, 0.004, 0.003, 0.002, 0.002,
@@ -21,7 +22,7 @@ const DEFAULT_CTR_VALUES = [
 
 const DIFFICULTY_LEVELS: DifficultyLevel[] = ["Easy", "Medium", "Hard", "Top10", "N/A"];
 
-export function ParameterPanel({ availableColumns, onParametersChange }: ParameterPanelProps) {
+export function ParameterPanel({ availableColumns, onParametersChange, ctrOverrides }: ParameterPanelProps) {
   const [columnMapping, setColumnMapping] = useState({
     keyword: availableColumns[0] || "",
     volume: availableColumns.find(c => c.toUpperCase().includes("VOLUME")) || availableColumns[0] || "",
@@ -81,7 +82,7 @@ export function ParameterPanel({ availableColumns, onParametersChange }: Paramet
     volMaxManual: 100000,
   });
 
-  const [ctrValues] = useState(DEFAULT_CTR_VALUES);
+  const [ctrValues, setCtrValues] = useState<number[]>(() => [...DEFAULT_CTR_VALUES]);
 
   function getFirstOfNextMonth(): Date {
     const today = new Date();
@@ -104,6 +105,15 @@ export function ParameterPanel({ availableColumns, onParametersChange }: Paramet
       });
     }
   }, [availableColumns]);
+
+  useEffect(() => {
+    if (ctrOverrides && ctrOverrides.length === DEFAULT_CTR_VALUES.length) {
+      setCtrValues((prev) => {
+        const shouldUpdate = ctrOverrides.some((value, index) => value !== prev[index]);
+        return shouldUpdate ? [...ctrOverrides] : prev;
+      });
+    }
+  }, [ctrOverrides]);
 
   // Auto-notify parent when parameters change
   useEffect(() => {

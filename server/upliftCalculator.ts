@@ -183,7 +183,8 @@ export function projectKeyword(
 // Main batch forecast function
 export function batchForecast(
   keywords: KeywordRow[],
-  params: UpliftParameters
+  params: UpliftParameters,
+  options?: { geoTargetConstants?: string[] }
 ): ProjectionResults {
   const { projectionHorizon, ctrValues, volumeMultiplier } = params;
   const horizon = projectionHorizon.monthsAhead;
@@ -215,7 +216,10 @@ export function batchForecast(
     let volumes: number[];
     if (projectionHorizon.mode === "Seasonal") {
       // Try to get seasonal data from cache
-      const seasonalData = getCachedSeasonalVolume(keyword.keyword);
+      const seasonalData = getCachedSeasonalVolume(
+        keyword.keyword,
+        options?.geoTargetConstants
+      );
       if (seasonalData && seasonalData.monthlyVolumes.length >= 12) {
         // Map projection months to seasonal data (cycling through 12-month pattern)
         volumes = [];

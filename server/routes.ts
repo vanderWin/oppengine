@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import session from "express-session";
 import { google } from "googleapis";
 import { randomUUID } from "crypto";
+import { runProphetForecast } from "./prophet";
 
 declare module "express-session" {
   interface SessionData {
@@ -45,6 +46,27 @@ const SCOPES = {
     "https://www.googleapis.com/auth/userinfo.email"
   ]
 };
+
+const GEO_TARGETS_BY_REGION: Record<"UK" | "US", string> = {
+  UK: "geoTargetConstants/2826",
+  US: "geoTargetConstants/2840",
+};
+
+function resolveGeoTargets(regionInput: unknown): {
+  region: "UK" | "US";
+  geoTargetConstants: string[];
+} {
+  const normalized =
+    typeof regionInput === "string"
+      ? regionInput.trim().toUpperCase()
+      : "";
+  const region = normalized === "US" ? "US" : "UK";
+
+  return {
+    region,
+    geoTargetConstants: [GEO_TARGETS_BY_REGION[region]],
+  };
+}
 
 function getOAuth2Client() {
   // Use REPLIT_DEV_DOMAIN for dev environment, or construct published URL
@@ -455,13 +477,94 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/prophet/forecast", async (req, res) => {
+    if (!req.session.gscTokens || !req.session.selectedGSCSite) {
+      return res.status(400).json({ error: "Search Console site is not connected" });
+    }
+
+    const rawMonthsAhead = Number(req.body?.monthsAhead ?? 12);
+    const monthsAhead = Number.isFinite(rawMonthsAhead)
+      ? Math.min(36, Math.max(1, Math.round(rawMonthsAhead)))
+      : 12;
+
+    const parseTrend = (value: unknown): "flat" | "linear" => (value === "linear" ? "linear" : "flat");
+    const clampMultiplier = (value: unknown): number => {
+      const num = typeof value === "number" ? value : Number(value);
+      if (!Number.isFinite(num)) {
+        return 0;
+      }
+      return Math.min(5, Math.max(0, num));
+    };
+
+    const brandTrend = parseTrend(req.body?.brandTrend);
+    const nonBrandTrend = parseTrend(req.body?.nonBrandTrend);
+    const brandMultiplier = clampMultiplier(req.body?.brandMultiplier);
+    const nonBrandMultiplier = clampMultiplier(req.body?.nonBrandMultiplier);
+
+    const brandTermsFromRequest: string[] | undefined = Array.isArray(req.body?.brandTerms)
+      ? req.body.brandTerms
+          .map((term: unknown) => (typeof term === "string" ? term.trim() : ""))
+          .filter((term: string) => term.length > 0)
+      : undefined;
+
+    const brandTerms = brandTermsFromRequest ?? req.session.gscBrandTerms ?? [];
+    const siteUrl = req.session.selectedGSCSite.siteUrl;
+
+    try {
+      const oauth2Client = getOAuth2Client();
+      oauth2Client.setCredentials(req.session.gscTokens);
+
+      const { getSearchConsoleReport } = await import("./searchConsole");
+      const report = await getSearchConsoleReport({
+        oauth2Client,
+        siteUrl,
+        brandTerms,
+        forceRefresh: false,
+      });
+
+      const forecasts = await runProphetForecast({
+        monthsAhead,
+        brand: {
+          trend: brandTrend,
+          multiplier: brandMultiplier,
+          data: report.rows.map((row) => ({
+            date: row.date,
+            value: row.brandClicks,
+          })),
+        },
+        nonBrand: {
+          trend: nonBrandTrend,
+          multiplier: nonBrandMultiplier,
+          data: report.rows.map((row) => ({
+            date: row.date,
+            value: row.nonBrandClicks,
+          })),
+        },
+      });
+
+      res.json({
+        monthsAhead,
+        generatedAt: new Date().toISOString(),
+        brand: forecasts.brand,
+        nonBrand: forecasts.nonBrand,
+      });
+    } catch (error: any) {
+      console.error("Error generating Prophet forecast:", error);
+      res.status(500).json({
+        error: "Failed to generate Prophet forecast",
+        details: error?.message,
+      });
+    }
+  });
+
   // Uplift Calculator - Parse CSV and run projections
   const { batchForecast } = await import("./upliftCalculator");
   const { UpliftParametersSchema, KeywordRowSchema } = await import("@shared/schema");
   
   app.post("/api/uplift/calculate", async (req, res) => {
     try {
-      const { csvData, parameters } = req.body;
+      const { csvData, parameters, searchVolumeRegion: requestedRegion } = req.body;
+      const { region: searchVolumeRegion, geoTargetConstants } = resolveGeoTargets(requestedRegion);
       
       if (!csvData || !Array.isArray(csvData)) {
         return res.status(400).json({ error: "CSV data is required as an array of rows" });
@@ -497,12 +600,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (validatedParams.projectionHorizon.mode === "Seasonal") {
         const { batchFetchSeasonalVolumes } = await import("./googleAdsCache");
         const keywordList = keywords.map(k => k.keyword);
-        console.log(`[Uplift] Fetching seasonal volumes for ${keywordList.length} keywords in Seasonal mode`);
-        await batchFetchSeasonalVolumes(keywordList);
+        console.log(
+          `[Uplift] Fetching seasonal volumes for ${keywordList.length} keywords in Seasonal mode (${searchVolumeRegion})`
+        );
+        await batchFetchSeasonalVolumes(keywordList, { geoTargetConstants });
       }
 
       // Run batch forecast (will use cached seasonal data if available)
-      const results = batchForecast(keywords, validatedParams);
+      const results = batchForecast(keywords, validatedParams, { geoTargetConstants });
       
       res.json(results);
     } catch (error: any) {
@@ -574,13 +679,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Test endpoint to verify Google Ads API integration
   app.post("/api/google-ads/test-keyword", async (req, res) => {
     try {
-      const { keyword } = req.body;
+      const { keyword, searchVolumeRegion: requestedRegion } = req.body;
       
       if (!keyword || typeof keyword !== "string") {
         return res.status(400).json({ error: "Keyword is required" });
       }
 
-      console.log(`[GoogleAds Test] Testing API for keyword: ${keyword}`);
+      const { region: searchVolumeRegion, geoTargetConstants } = resolveGeoTargets(requestedRegion);
+
+      console.log(
+        `[GoogleAds Test] Testing API for keyword: ${keyword} (${searchVolumeRegion})`
+      );
       
       const hasCredentials = !!(
         process.env.GOOGLE_ADS_DEVELOPER_TOKEN &&
@@ -592,7 +701,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`[GoogleAds Test] Has credentials: ${hasCredentials}`);
 
-      const data = await fetchSeasonalVolumeFromGoogleAds(keyword);
+      const data = await fetchSeasonalVolumeFromGoogleAds(keyword, {
+        geoTargetConstants,
+      });
       
       if (!data) {
         return res.status(404).json({ 
@@ -608,6 +719,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         keyword,
         monthlyVolumes: data.monthlyVolumes,
         source: "Google Ads API",
+        region: searchVolumeRegion,
       });
     } catch (error: any) {
       console.error("[GoogleAds Test] Error:", error);
@@ -621,19 +733,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Fetch seasonal volume for a single keyword
   app.post("/api/google-ads/seasonal-volume", async (req, res) => {
     try {
-      const { keyword } = req.body;
+      const { keyword, searchVolumeRegion: requestedRegion } = req.body;
       
       if (!keyword || typeof keyword !== "string") {
         return res.status(400).json({ error: "Keyword is required" });
       }
 
-      const data = await fetchSeasonalVolumeFromGoogleAds(keyword);
+      const { region: searchVolumeRegion, geoTargetConstants } = resolveGeoTargets(requestedRegion);
+
+      const data = await fetchSeasonalVolumeFromGoogleAds(keyword, {
+        geoTargetConstants,
+      });
       
       if (!data) {
         return res.status(404).json({ error: "Unable to fetch seasonal volume data" });
       }
 
-      res.json(data);
+      res.json({ ...data, region: searchVolumeRegion });
     } catch (error: any) {
       console.error("Error fetching seasonal volume:", error);
       res.status(500).json({ 
@@ -646,13 +762,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Batch fetch seasonal volumes
   app.post("/api/google-ads/seasonal-volumes-batch", async (req, res) => {
     try {
-      const { keywords } = req.body;
+      const { keywords, searchVolumeRegion: requestedRegion } = req.body;
       
       if (!keywords || !Array.isArray(keywords)) {
         return res.status(400).json({ error: "Keywords array is required" });
       }
 
-      const results = await batchFetchSeasonalVolumes(keywords);
+      const { region: searchVolumeRegion, geoTargetConstants } = resolveGeoTargets(requestedRegion);
+
+      const results = await batchFetchSeasonalVolumes(keywords, {
+        geoTargetConstants,
+      });
       
       // Convert Map to object for JSON serialization
       const resultsObj = Object.fromEntries(results);
@@ -660,6 +780,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ 
         count: results.size,
         data: resultsObj,
+        region: searchVolumeRegion,
       });
     } catch (error: any) {
       console.error("Error batch fetching seasonal volumes:", error);
