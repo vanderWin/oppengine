@@ -2,8 +2,12 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import session from "express-session";
 import { google } from "googleapis";
-import { randomUUID } from "crypto";
-import { runProphetForecast } from "./prophet";
+import { randomUUID, createHash } from "crypto";
+import { runProphetForecast, type ProphetForecastResult } from "./prophet";
+import type { GAReportResponse, GSCReportResponse, ProjectionResults } from "@shared/schema";
+import { loadSnapshot, saveSnapshot } from "./snapshotStore";
+import { promises as fs } from "fs";
+import path from "path";
 
 declare module "express-session" {
   interface SessionData {
@@ -52,6 +56,14 @@ const GEO_TARGETS_BY_REGION: Record<"UK" | "US", string> = {
   US: "geoTargetConstants/2840",
 };
 
+function toBase64Url(value: string): string {
+  return Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
 function resolveGeoTargets(regionInput: unknown): {
   region: "UK" | "US";
   geoTargetConstants: string[];
@@ -66,6 +78,39 @@ function resolveGeoTargets(regionInput: unknown): {
     region,
     geoTargetConstants: [GEO_TARGETS_BY_REGION[region]],
   };
+}
+
+async function loadFirstGaSnapshot(): Promise<{ propertyId: string; report: GAReportResponse } | null> {
+  try {
+    const gaDir = path.join(process.cwd(), "snapshots", "ga");
+    const entries = await fs.readdir(gaDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const filePath = path.join(gaDir, entry.name, "report.json");
+      try {
+        const raw = await fs.readFile(filePath, "utf-8");
+        const report = JSON.parse(raw) as GAReportResponse;
+        return { propertyId: entry.name, report };
+      } catch {
+        // Ignore malformed snapshot and continue searching.
+      }
+    }
+  } catch {
+    // No snapshot directory or other filesystem issue; ignore.
+  }
+  return null;
+}
+
+async function loadGaSnapshot(propertyId?: string | null): Promise<{ propertyId: string; report: GAReportResponse } | null> {
+  if (propertyId) {
+    const snapshot = await loadSnapshot<GAReportResponse>(["ga", propertyId, "report"]);
+    if (snapshot) {
+      return { propertyId, report: snapshot };
+    }
+  }
+  return loadFirstGaSnapshot();
 }
 
 function getOAuth2Client() {
@@ -244,13 +289,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Check connection status
-  app.get("/api/google/status", (req, res) => {
+  app.get("/api/google/status", async (req, res) => {
+    let selectedGAProperty = req.session.selectedGAProperty ?? null;
+    let gaReportSummary = req.session.gaReportSummary ?? null;
+
+    if (!gaReportSummary) {
+      const propertyIdHint = selectedGAProperty ? selectedGAProperty.name.split("/").pop() ?? null : null;
+      const snapshot = await loadGaSnapshot(propertyIdHint);
+      if (snapshot) {
+        gaReportSummary = {
+          propertyId: snapshot.report.propertyId ?? snapshot.propertyId,
+          propertyName: snapshot.report.propertyName,
+          fetchedAt: snapshot.report.generatedAt,
+          headline90Day: snapshot.report.headline90Day,
+        };
+        req.session.gaReportSummary = gaReportSummary;
+        if (!selectedGAProperty) {
+          selectedGAProperty = {
+            name: `properties/${snapshot.report.propertyId ?? snapshot.propertyId}`,
+            displayName: snapshot.report.propertyName,
+          };
+          req.session.selectedGAProperty = selectedGAProperty;
+        }
+      }
+    }
+
     res.json({
       ga: {
         connected: req.session.gaConnected || false,
         hasTokens: !!req.session.gaTokens,
-        selectedProperty: req.session.selectedGAProperty || null,
-        reportSummary: req.session.gaReportSummary || null,
+        selectedProperty: selectedGAProperty,
+        reportSummary: gaReportSummary,
       },
       gsc: {
         connected: req.session.gscConnected || false,
@@ -359,28 +428,58 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.post("/api/google/ga/report", async (req, res) => {
-    if (!req.session.gaTokens) {
-      return res.status(401).json({ error: "Not authenticated with Google Analytics" });
-    }
-
-    if (!req.session.selectedGAProperty) {
-      return res.status(400).json({ error: "No Google Analytics property selected" });
-    }
-
     try {
+      const forceRefresh = Boolean(req.body?.forceRefresh);
+      const propertyIdFromSelection = req.session.selectedGAProperty?.name
+        ? req.session.selectedGAProperty.name.split("/").pop() ?? null
+        : null;
+      let propertyId: string | null =
+        propertyIdFromSelection ??
+        req.session.gaReportSummary?.propertyId ??
+        (typeof req.body?.propertyId === "string" ? req.body.propertyId : null);
+
+      if (!forceRefresh) {
+        const snapshotInfo = await loadGaSnapshot(propertyId);
+        if (snapshotInfo) {
+          propertyId = snapshotInfo.propertyId;
+          req.session.gaReportSummary = {
+            propertyId: snapshotInfo.report.propertyId ?? snapshotInfo.propertyId,
+            propertyName: snapshotInfo.report.propertyName,
+            fetchedAt: snapshotInfo.report.generatedAt,
+            headline90Day: snapshotInfo.report.headline90Day,
+          };
+          if (!req.session.selectedGAProperty) {
+            req.session.selectedGAProperty = {
+              name: `properties/${snapshotInfo.report.propertyId ?? snapshotInfo.propertyId}`,
+              displayName: snapshotInfo.report.propertyName,
+            };
+          }
+          return res.json(snapshotInfo.report);
+        }
+      }
+
+      if (!req.session.gaTokens) {
+        return res.status(401).json({ error: "Not authenticated with Google Analytics" });
+      }
+
+      if (!req.session.selectedGAProperty) {
+        return res.status(400).json({ error: "No Google Analytics property selected" });
+      }
+
       const oauth2Client = getOAuth2Client();
       oauth2Client.setCredentials(req.session.gaTokens);
 
       const propertyName = req.session.selectedGAProperty.name;
       const propertyDisplayName = req.session.selectedGAProperty.displayName;
-      const propertyId = propertyName.split("/").pop() || propertyName;
+      propertyId = propertyName.split("/").pop() || propertyName;
+      const snapshotKey = ["ga", propertyId, "report"];
 
       const { getOrganicReportForProperty } = await import("./googleAnalytics");
       const report = await getOrganicReportForProperty({
         oauth2Client,
         propertyId,
         propertyName: propertyDisplayName,
-        forceRefresh: Boolean(req.body?.forceRefresh),
+        forceRefresh,
       });
 
       // Persist updated tokens (may include refreshed access token)
@@ -391,6 +490,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         fetchedAt: report.generatedAt,
         headline90Day: report.headline90Day,
       };
+
+      if (!forceRefresh) {
+        await saveSnapshot(snapshotKey, report);
+      }
 
       res.json(report);
     } catch (error: any) {
@@ -431,6 +534,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       oauth2Client.setCredentials(req.session.gscTokens);
 
       const siteUrl = req.session.selectedGSCSite.siteUrl;
+      const forceRefresh = Boolean(req.body?.forceRefresh);
 
       const fromBody = req.body?.brandTerms;
       let brandTerms: string[] = [];
@@ -450,7 +554,31 @@ export async function registerRoutes(app: Express): Promise<Server> {
         brandTerms = req.session.gscBrandTerms;
       }
 
+      const brandTermsSlug =
+        brandTerms.length > 0
+          ? brandTerms
+              .map((term) => term.replace(/[^a-zA-Z0-9-_]+/g, "_").toLowerCase())
+              .join("__")
+          : "none";
+      const siteSlug = toBase64Url(siteUrl);
+      const snapshotKey = ["gsc", siteSlug, brandTermsSlug];
+
       const { getSearchConsoleReport } = await import("./searchConsole");
+      if (!forceRefresh) {
+        const snapshot = await loadSnapshot<GSCReportResponse>(snapshotKey);
+        if (snapshot) {
+          req.session.gscTokens = oauth2Client.credentials;
+          req.session.gscBrandTerms = snapshot.brandTerms;
+          req.session.gscReportSummary = {
+            siteUrl: snapshot.siteUrl,
+            brandTerms: snapshot.brandTerms,
+            fetchedAt: snapshot.generatedAt,
+            headline: snapshot.headline,
+          };
+          return res.json(snapshot);
+        }
+      }
+
       const report = await getSearchConsoleReport({
         oauth2Client,
         siteUrl,
@@ -467,6 +595,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         headline: report.headline,
       };
 
+      if (!forceRefresh) {
+        await saveSnapshot(snapshotKey, report);
+      }
+
       res.json(report);
     } catch (error: any) {
       console.error("Error fetching GSC report:", error);
@@ -482,6 +614,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(400).json({ error: "Search Console site is not connected" });
     }
 
+    const forceRefresh = Boolean(req.body?.forceRefresh);
     const rawMonthsAhead = Number(req.body?.monthsAhead ?? 12);
     const monthsAhead = Number.isFinite(rawMonthsAhead)
       ? Math.min(36, Math.max(1, Math.round(rawMonthsAhead)))
@@ -509,18 +642,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     const brandTerms = brandTermsFromRequest ?? req.session.gscBrandTerms ?? [];
     const siteUrl = req.session.selectedGSCSite.siteUrl;
+    const siteSlug = toBase64Url(siteUrl);
+    const brandTermsSlug =
+      brandTerms.length > 0
+        ? brandTerms.map((term) => term.replace(/[^a-zA-Z0-9-_]+/g, "_").toLowerCase()).join("__")
+        : "none";
+    const prophetConfigSlug = [
+      monthsAhead,
+      brandTrend,
+      brandMultiplier.toFixed(2),
+      nonBrandTrend,
+      nonBrandMultiplier.toFixed(2),
+    ].join("-");
+    const prophetSnapshotKey = ["prophet", siteSlug, brandTermsSlug, prophetConfigSlug];
 
     try {
       const oauth2Client = getOAuth2Client();
       oauth2Client.setCredentials(req.session.gscTokens);
 
+      if (!forceRefresh) {
+        const cachedForecast = await loadSnapshot<{
+          monthsAhead: number;
+          generatedAt: string;
+          brand: ProphetForecastResult["brand"];
+          nonBrand: ProphetForecastResult["nonBrand"];
+        }>(prophetSnapshotKey);
+        if (cachedForecast) {
+          return res.json(cachedForecast);
+        }
+      }
+
       const { getSearchConsoleReport } = await import("./searchConsole");
-      const report = await getSearchConsoleReport({
-        oauth2Client,
-        siteUrl,
-        brandTerms,
-        forceRefresh: false,
-      });
+      let report: GSCReportResponse | null = null;
+      if (!forceRefresh) {
+        report = await loadSnapshot<GSCReportResponse>(["gsc", siteSlug, brandTermsSlug]);
+      }
+
+      if (!report) {
+        report = await getSearchConsoleReport({
+          oauth2Client,
+          siteUrl,
+          brandTerms,
+          forceRefresh: false,
+        });
+      }
 
       const forecasts = await runProphetForecast({
         monthsAhead,
@@ -542,12 +707,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
         },
       });
 
-      res.json({
+      const responsePayload = {
         monthsAhead,
         generatedAt: new Date().toISOString(),
         brand: forecasts.brand,
         nonBrand: forecasts.nonBrand,
-      });
+      };
+
+      if (!forceRefresh) {
+        await saveSnapshot(prophetSnapshotKey, responsePayload);
+      }
+
+      res.json(responsePayload);
     } catch (error: any) {
       console.error("Error generating Prophet forecast:", error);
       res.status(500).json({
@@ -565,6 +736,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const { csvData, parameters, searchVolumeRegion: requestedRegion } = req.body;
       const { region: searchVolumeRegion, geoTargetConstants } = resolveGeoTargets(requestedRegion);
+      const forceRefresh = Boolean(req.body?.forceRefresh);
       
       if (!csvData || !Array.isArray(csvData)) {
         return res.status(400).json({ error: "CSV data is required as an array of rows" });
@@ -596,6 +768,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       });
 
+      const snapshotSignatureBase = JSON.stringify({
+        keywords,
+        parameters: validatedParams,
+        searchVolumeRegion,
+      });
+      const snapshotSignature = createHash("sha256").update(snapshotSignatureBase).digest("hex").slice(0, 16);
+      const snapshotKey = ["uplift", searchVolumeRegion.toLowerCase(), snapshotSignature];
+
+      if (!forceRefresh) {
+        const cachedResults = await loadSnapshot<ProjectionResults>(snapshotKey);
+        if (cachedResults) {
+          return res.json(cachedResults);
+        }
+      }
+
       // If Seasonal mode, fetch Google Ads data for all keywords before calculation
       if (validatedParams.projectionHorizon.mode === "Seasonal") {
         const { batchFetchSeasonalVolumes } = await import("./googleAdsCache");
@@ -608,7 +795,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       // Run batch forecast (will use cached seasonal data if available)
       const results = batchForecast(keywords, validatedParams, { geoTargetConstants });
-      
+      if (!forceRefresh) {
+        await saveSnapshot(snapshotKey, results);
+      }
+
       res.json(results);
     } catch (error: any) {
       console.error("Uplift calculation error:", error);

@@ -112,6 +112,8 @@ export const ProjectionRowSchema = z.object({
   expVisits: z.number(),
   baselineVisits: z.number(),
   expUplift: z.number(),
+  quickWin: z.boolean(),
+  opportunityScore: z.number().min(0).max(10),
 });
 export type ProjectionRow = z.infer<typeof ProjectionRowSchema>;
 

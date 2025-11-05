@@ -14,9 +14,9 @@ export function OpportunityBarChart({ data, onCategoryClick }: OpportunityBarCha
   const sortedData = [...data].sort((a, b) => b.opportunityScore - a.opportunityScore);
 
   const getBarColor = (score: number) => {
-    if (score >= 80) return "hsl(var(--chart-1))";
-    if (score >= 60) return "hsl(var(--chart-2))";
-    if (score >= 40) return "hsl(var(--chart-3))";
+    if (score >= 8) return "hsl(var(--chart-1))";
+    if (score >= 6) return "hsl(var(--chart-2))";
+    if (score >= 4) return "hsl(var(--chart-3))";
     return "hsl(var(--chart-4))";
   };
 

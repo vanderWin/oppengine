@@ -140,10 +140,17 @@ export function ctrTop20(rank: number, ctrValues: number[]): number {
 }
 
 // Add months to a date
+function normalizeMonthStart(date: Date): Date {
+  if (!Number.isFinite(date.getTime())) {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  }
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), 1));
+}
+
 function addMonths(date: Date, months: number): Date {
-  const result = new Date(date);
-  result.setMonth(result.getMonth() + months);
-  return result;
+  const base = normalizeMonthStart(date);
+  return new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + months, 1));
 }
 
 // Project a single keyword's rank over the horizon
@@ -198,13 +205,14 @@ export function batchForecast(
   }
 
   // Generate month start dates
-  const startDate = new Date(projectionHorizon.startDate);
+  const startDate = normalizeMonthStart(new Date(projectionHorizon.startDate));
   const monthStarts: Date[] = [];
   for (let i = 0; i <= horizon; i++) {
     monthStarts.push(addMonths(startDate, i));
   }
 
   const detailedProjections: ProjectionRow[] = [];
+  const keywordDetails: Array<{ keyword: string; totalUplift: number; rows: ProjectionRow[] }> = [];
   const seasonalVolumeDebug: Array<{ keyword: string; monthlyVolumes: number[]; source: "cache" | "fallback" }> = [];
 
   // Process each keyword
@@ -223,7 +231,7 @@ export function batchForecast(
       if (seasonalData && seasonalData.monthlyVolumes.length >= 12) {
         // Map projection months to seasonal data (cycling through 12-month pattern)
         volumes = [];
-        const startMonth = new Date(projectionHorizon.startDate).getMonth();
+        const startMonth = startDate.getUTCMonth();
         const fallbackVolume =
           seasonalData.averageMonthlySearches && seasonalData.averageMonthlySearches > 0
             ? seasonalData.averageMonthlySearches
@@ -259,10 +267,27 @@ export function batchForecast(
     const visits = ctrVals.map((ctr, i) => ctr * volumes[i]);
     const baselineCtr = ctrTop20(keyword.startRank, ctrValues);
     const baselineVisits = volumes.map(v => baselineCtr * v);
+    const quickWinHorizon = Math.min(horizon, 3);
+    const quickWinThreshold = 1000; // require >= 1k incremental visits within first 3 months to qualify
+    let isQuickWin = false;
+
+    for (let m = 1; m <= quickWinHorizon; m++) {
+      const uplift = visits[m] - baselineVisits[m];
+      if (uplift >= quickWinThreshold) {
+        isQuickWin = true;
+        break;
+      }
+    }
+
+    let keywordTotalUplift = 0;
+    const keywordRows: ProjectionRow[] = [];
 
     for (let m = 0; m <= horizon; m++) {
       const uplift = visits[m] - baselineVisits[m];
-      detailedProjections.push({
+      if (m > 0) {
+        keywordTotalUplift += Math.max(uplift, 0);
+      }
+      keywordRows.push({
         keyword: keyword.keyword,
         volume: keyword.volume,
         difficulty: keyword.difficulty || "N/A",
@@ -277,8 +302,55 @@ export function batchForecast(
         expVisits: Math.round(visits[m] * 100) / 100,
         baselineVisits: Math.round(baselineVisits[m] * 100) / 100,
         expUplift: Math.round(uplift * 100) / 100,
+        quickWin: isQuickWin,
+        opportunityScore: 0,
       });
     }
+
+    keywordDetails.push({
+      keyword: keyword.keyword,
+      totalUplift: keywordTotalUplift,
+      rows: keywordRows,
+    });
+  }
+
+  if (keywordDetails.length > 0) {
+    const positiveTotals = keywordDetails
+      .filter(detail => detail.totalUplift > 0)
+      .map(detail => detail.totalUplift);
+
+    const scoreByTotal = new Map<number, number>();
+
+    if (positiveTotals.length > 0) {
+      const sortedTotals = [...positiveTotals].sort((a, b) => a - b);
+      const totalCount = sortedTotals.length;
+
+      for (let i = 0; i < sortedTotals.length;) {
+        const value = sortedTotals[i];
+        let j = i;
+        while (j < sortedTotals.length && sortedTotals[j] === value) {
+          j++;
+        }
+        const numLess = i;
+        const numEqual = j - i;
+        const percentile = ((numLess + 0.5 * numEqual) / totalCount) * 100;
+        const rawScore = Math.ceil(percentile / 10);
+        const boundedScore = Math.max(1, Math.min(10, rawScore));
+        scoreByTotal.set(value, boundedScore);
+        i = j;
+      }
+    }
+
+    keywordDetails.forEach(detail => {
+      const score =
+        detail.totalUplift > 0
+          ? scoreByTotal.get(detail.totalUplift) ?? 1
+          : 0;
+      detail.rows.forEach(row => {
+        row.opportunityScore = detail.totalUplift > 0 ? score : 0;
+        detailedProjections.push(row);
+      });
+    });
   }
 
   // Aggregate by month (excluding month 0 = baseline)

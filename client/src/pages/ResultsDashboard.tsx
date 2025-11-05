@@ -1,181 +1,515 @@
-import { MetricCard } from "@/components/MetricCard";
-import { UpliftForecastChart } from "@/components/UpliftForecastChart";
-import { OpportunityBarChart } from "@/components/OpportunityBarChart";
-import { DataTable } from "@/components/DataTable";
+import { useCallback, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { GAReportResponse, ProjectionResults } from "@shared/schema";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Download, TrendingUp, Target, Zap } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { apiRequest } from "@/lib/queryClient";
+
+const PROPHET_STORAGE_KEY = "prophet/state";
+const UPLIFT_STORAGE_KEY = "uplift/state";
+
+interface CombinedSessionsDatum {
+  date: string;
+  monthKey: string;
+  actualSessions: number;
+  scaledBrand: number;
+  scaledNonBrand: number;
+  isForecast: boolean;
+}
+
+interface ProphetStoredResults {
+  combinedSessions: CombinedSessionsDatum[];
+}
+
+interface ProphetPersistedState {
+  results?: ProphetStoredResults | null;
+}
+
+interface UpliftPersistedState {
+  results: ProjectionResults | null;
+}
+
+interface StatusResponse {
+  ga: {
+    connected: boolean;
+    hasTokens: boolean;
+    reportSummary:
+      | {
+          propertyId: string;
+          propertyName: string;
+          fetchedAt: string;
+          headline90Day: {
+            totalSessions: number;
+            totalTransactions: number;
+            totalRevenue: number;
+            averageOrderValue: number;
+            conversionRate: number;
+          };
+        }
+      | null;
+  };
+  gsc: {
+    connected: boolean;
+    hasTokens?: boolean;
+    reportSummary:
+      | {
+          siteUrl: string;
+          brandTerms: string[];
+          fetchedAt: string;
+        }
+      | null;
+  };
+}
+
+interface SummaryCardProps {
+  title: string;
+  description?: string;
+  sessionsDisplay: string;
+  transactionsDisplay: string;
+  revenueDisplay: string;
+  accentColor: string;
+}
+
+function readProphetState(): ProphetPersistedState | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const raw = window.sessionStorage.getItem(PROPHET_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as ProphetPersistedState;
+  } catch {
+    return null;
+  }
+}
+
+function readUpliftState(): UpliftPersistedState | null {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  const raw = window.sessionStorage.getItem(UPLIFT_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  try {
+    return JSON.parse(raw) as UpliftPersistedState;
+  } catch {
+    return null;
+  }
+}
+
+function SummaryCard({
+  title,
+  description,
+  sessionsDisplay,
+  transactionsDisplay,
+  revenueDisplay,
+  accentColor,
+}: SummaryCardProps) {
+  const sessionsUnavailable = sessionsDisplay === "—";
+  const transactionsUnavailable = transactionsDisplay === "—";
+  const revenueUnavailable = revenueDisplay === "—";
+
+  return (
+    <Card className="h-full">
+      <CardHeader className="pb-0">
+        <CardTitle className="flex items-center gap-2 text-base font-semibold">
+          <span className={`h-2 w-2 rounded-full ${accentColor}`} aria-hidden="true" />
+          {title}
+        </CardTitle>
+        {description ? <CardDescription>{description}</CardDescription> : null}
+      </CardHeader>
+      <CardContent className="space-y-4 pt-4">
+        <div>
+          <div className={`text-3xl font-semibold ${sessionsUnavailable ? "text-muted-foreground" : ""}`}>
+            {sessionsDisplay}
+          </div>
+          <p className="text-sm text-muted-foreground">Sessions</p>
+        </div>
+        <div className="space-y-2 text-sm">
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-base text-muted-foreground" aria-hidden="true">
+              shopping_cart_checkout
+            </span>
+            <span className={`font-semibold ${transactionsUnavailable ? "text-muted-foreground" : ""}`}>
+              {transactionsDisplay}
+            </span>
+            <span className="text-muted-foreground">Transactions</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="material-symbols-outlined text-base text-muted-foreground" aria-hidden="true">
+              money_bag
+            </span>
+            <span className={`font-semibold ${revenueUnavailable ? "text-muted-foreground" : ""}`}>
+              {revenueDisplay}
+            </span>
+            <span className="text-muted-foreground">Revenue</span>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function ResultsDashboard() {
-  //todo: remove mock functionality
-  const mockForecastData = [
-    { date: "Jan", historic: 45000, predictedBrand: 0, predictedNonBrand: 0, uplift: 0 },
-    { date: "Feb", historic: 47000, predictedBrand: 0, predictedNonBrand: 0, uplift: 0 },
-    { date: "Mar", historic: 49000, predictedBrand: 0, predictedNonBrand: 0, uplift: 0 },
-    { date: "Apr", historic: 51000, predictedBrand: 0, predictedNonBrand: 0, uplift: 0 },
-    { date: "May", predictedBrand: 28000, predictedNonBrand: 32000, uplift: 8000 },
-    { date: "Jun", predictedBrand: 29500, predictedNonBrand: 33800, uplift: 8500 },
-    { date: "Jul", predictedBrand: 31000, predictedNonBrand: 35600, uplift: 9000 },
-    { date: "Aug", predictedBrand: 32500, predictedNonBrand: 37400, uplift: 9500 },
-    { date: "Sep", predictedBrand: 34000, predictedNonBrand: 39200, uplift: 10000 },
+  const queryClient = useQueryClient();
+  const [hydratedProphet] = useState<ProphetPersistedState | null>(() => readProphetState());
+  const [hydratedUplift] = useState<UpliftPersistedState | null>(() => readUpliftState());
+
+  const { data: status, isLoading: isStatusLoading } = useQuery<StatusResponse>({
+    queryKey: ["/api/google/status"],
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
+  });
+
+  const prophetQuery = useQuery<ProphetStoredResults | null>({
+    queryKey: ["prophet/results"],
+    queryFn: () =>
+      Promise.resolve(
+        queryClient.getQueryData<ProphetStoredResults>(["prophet/results"]) ?? hydratedProphet?.results ?? null,
+      ),
+    initialData: () => queryClient.getQueryData<ProphetStoredResults>(["prophet/results"]) ?? hydratedProphet?.results ?? null,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
+  });
+
+  const upliftQuery = useQuery<UpliftPersistedState | null>({
+    queryKey: ["uplift/state"],
+    queryFn: () =>
+      Promise.resolve(
+        queryClient.getQueryData<UpliftPersistedState>(["uplift/state"]) ?? hydratedUplift ?? null,
+      ),
+    initialData: () => queryClient.getQueryData<UpliftPersistedState>(["uplift/state"]) ?? hydratedUplift ?? null,
+    staleTime: Infinity,
+    gcTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    refetchOnMount: false,
+  });
+
+  const prophetResults = prophetQuery.data;
+  const upliftState = upliftQuery.data;
+  const upliftResults = upliftState?.results ?? null;
+
+  const { data: gaReport, isLoading: isLoadingGaReport, isError: hasGaReportError } = useQuery<GAReportResponse>({
+    queryKey: ["/api/google/ga/report"],
+    enabled: Boolean(status?.ga?.reportSummary),
+    queryFn: async () => {
+      const response = await apiRequest("POST", "/api/google/ga/report", {});
+      if (!response.ok) {
+        throw new Error("Failed to fetch GA report");
+      }
+      return (await response.json()) as GAReportResponse;
+    },
+    staleTime: 5 * 60 * 1000,
+    gcTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+
+  const hasGAData = Boolean(status?.ga?.reportSummary);
+  const hasGSCData = Boolean(status?.gsc?.reportSummary);
+  const hasProphetResults = Boolean(prophetResults?.combinedSessions?.length);
+  const hasUpliftResults = Boolean(upliftResults);
+
+  const missingPrerequisites = useMemo(() => [] as string[], []);
+
+  const lastTwelveMonthsTotals = useMemo(() => {
+    if (!gaReport?.rows || gaReport.rows.length === 0) {
+      return { sessions: null, transactions: null, revenue: null };
+    }
+    const cutoff = new Date();
+    cutoff.setHours(0, 0, 0, 0);
+    cutoff.setMonth(cutoff.getMonth() - 12);
+
+    return gaReport.rows.reduce(
+      (acc, row) => {
+        const rowDate = new Date(`${row.date}T00:00:00`);
+        if (Number.isNaN(rowDate.getTime()) || rowDate < cutoff) {
+          return acc;
+        }
+        acc.sessions += Number.isFinite(row.sessions) ? row.sessions : 0;
+        acc.transactions += Number.isFinite(row.transactions) ? row.transactions : 0;
+        acc.revenue += Number.isFinite(row.revenue) ? row.revenue : 0;
+        return acc;
+      },
+      { sessions: 0, transactions: 0, revenue: 0 },
+    );
+  }, [gaReport?.rows]);
+
+  const projectedBaselineSessions = useMemo(() => {
+    if (!prophetResults?.combinedSessions) {
+      return null;
+    }
+    return prophetResults.combinedSessions
+      .filter((entry) => entry.isForecast)
+      .reduce((total, entry) => {
+        const brand = Number.isFinite(entry.scaledBrand) ? entry.scaledBrand : 0;
+        const nonBrand = Number.isFinite(entry.scaledNonBrand) ? entry.scaledNonBrand : 0;
+        return total + brand + nonBrand;
+      }, 0);
+  }, [prophetResults?.combinedSessions]);
+
+  const projectionMonths = useMemo(() => {
+    if (!prophetResults?.combinedSessions) {
+      return 0;
+    }
+    return prophetResults.combinedSessions.reduce((count, entry) => count + (entry.isForecast ? 1 : 0), 0);
+  }, [prophetResults?.combinedSessions]);
+
+  const compactNumberFormatter = useMemo(
+    () => new Intl.NumberFormat("en-GB", { notation: "compact", maximumFractionDigits: 1 }),
+    [],
+  );
+  const compactCurrencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat("en-GB", {
+        notation: "compact",
+        style: "currency",
+        currency: "GBP",
+        maximumFractionDigits: 1,
+        minimumFractionDigits: 0,
+      }),
+    [],
+  );
+  const standardCurrencyFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat("en-GB", {
+        style: "currency",
+        currency: "GBP",
+        maximumFractionDigits: 2,
+        minimumFractionDigits: 2,
+      }),
+    [],
+  );
+
+  const formatNumber = useCallback(
+    (value: number | null | undefined, prefix = "") => {
+      if (value == null || !Number.isFinite(value)) {
+        return "—";
+      }
+      return `${prefix}${compactNumberFormatter.format(value)}`;
+    },
+    [compactNumberFormatter],
+  );
+
+  const formatCurrency = useCallback(
+    (value: number | null | undefined, prefix = "") => {
+      if (value == null || !Number.isFinite(value)) {
+        return "—";
+      }
+      return `${prefix}${compactCurrencyFormatter.format(value)}`;
+    },
+    [compactCurrencyFormatter],
+  );
+
+  const gaHeadline = gaReport?.headline90Day ?? status?.ga?.reportSummary?.headline90Day ?? null;
+  const conversionRatePct = Number.isFinite(gaHeadline?.conversionRate) ? gaHeadline!.conversionRate : 0;
+  const averageOrderValue = Number.isFinite(gaHeadline?.averageOrderValue) ? gaHeadline!.averageOrderValue : 0;
+  const hasEcommerceMetrics = conversionRatePct > 0 && averageOrderValue > 0;
+  const conversionRateDecimal = hasEcommerceMetrics ? conversionRatePct / 100 : 0;
+
+  const baselineTransactions =
+    hasEcommerceMetrics && projectedBaselineSessions != null
+      ? projectedBaselineSessions * conversionRateDecimal
+      : null;
+  const baselineRevenue =
+    hasEcommerceMetrics && baselineTransactions != null ? baselineTransactions * averageOrderValue : null;
+
+  const upliftTransactions =
+    hasEcommerceMetrics && upliftResults ? upliftResults.totalUpliftSum * conversionRateDecimal : null;
+  const upliftRevenue =
+    hasEcommerceMetrics && upliftTransactions != null ? upliftTransactions * averageOrderValue : null;
+
+  const summaryCards: SummaryCardProps[] = [
+    {
+      title: "Historic Sessions / Transactions / Revenue",
+      description: "Last 12 months",
+      sessionsDisplay: formatNumber(lastTwelveMonthsTotals.sessions),
+      transactionsDisplay: formatNumber(lastTwelveMonthsTotals.transactions),
+      revenueDisplay: formatCurrency(lastTwelveMonthsTotals.revenue),
+      accentColor: "bg-slate-500",
+    },
+    {
+      title: "Projected Baseline Sessions / Transactions / Revenue",
+      description: projectionMonths > 0 ? `${projectionMonths} month Prophet horizon` : "Prophet projection horizon",
+      sessionsDisplay: formatNumber(projectedBaselineSessions),
+      transactionsDisplay: formatNumber(hasEcommerceMetrics ? baselineTransactions : null),
+      revenueDisplay: formatCurrency(hasEcommerceMetrics ? baselineRevenue : null),
+      accentColor: "bg-sky-500",
+    },
+    {
+      title: "Potential Session Uplift / Transactions / Revenue",
+      description: "Keyword uplift totals",
+      sessionsDisplay: formatNumber(
+        upliftResults?.totalUpliftSum ?? null,
+        upliftResults && upliftResults.totalUpliftSum > 0 ? "+" : "",
+      ),
+      transactionsDisplay: formatNumber(
+        hasEcommerceMetrics ? upliftTransactions : null,
+        hasEcommerceMetrics && upliftTransactions != null && upliftTransactions > 0 ? "+" : "",
+      ),
+      revenueDisplay: formatCurrency(
+        hasEcommerceMetrics ? upliftRevenue : null,
+        hasEcommerceMetrics && upliftRevenue != null && upliftRevenue > 0 ? "+" : "",
+      ),
+      accentColor: "bg-amber-500",
+    },
   ];
 
-  const mockCategoryData = [
-    { category: "SEO Marketing", opportunityScore: 92, estimatedSessions: 12500 },
-    { category: "Content Strategy", opportunityScore: 85, estimatedSessions: 9800 },
-    { category: "Analytics Tools", opportunityScore: 78, estimatedSessions: 7200 },
-    { category: "Digital Advertising", opportunityScore: 65, estimatedSessions: 5400 },
-    { category: "Social Media", opportunityScore: 52, estimatedSessions: 3900 },
-  ];
-
-  const mockKeywordData = [
-    { keyword: "seo marketing strategy", currentPosition: 12, targetPosition: 5, volume: 8900, ctrGain: 4.2, estimatedSessions: 374, revenueImpact: 1496 },
-    { keyword: "content marketing tips", currentPosition: 8, targetPosition: 3, volume: 5600, ctrGain: 6.8, estimatedSessions: 381, revenueImpact: 1524 },
-    { keyword: "digital analytics tools", currentPosition: 15, targetPosition: 7, volume: 4200, ctrGain: 3.5, estimatedSessions: 147, revenueImpact: 588 },
-    { keyword: "social media management", currentPosition: 10, targetPosition: 4, volume: 7800, ctrGain: 5.1, estimatedSessions: 398, revenueImpact: 1592 },
-  ];
-
-  const keywordColumns = [
-    { key: "keyword", header: "Keyword", sortable: true },
-    { 
-      key: "currentPosition", 
-      header: "Current Pos.", 
-      sortable: true,
-      render: (val: number) => <Badge variant="secondary">{val}</Badge>
-    },
-    { 
-      key: "targetPosition", 
-      header: "Target Pos.", 
-      sortable: true,
-      render: (val: number) => <Badge variant="default">{val}</Badge>
-    },
-    { 
-      key: "volume", 
-      header: "Volume", 
-      sortable: true,
-      render: (val: number) => val.toLocaleString()
-    },
-    { 
-      key: "ctrGain", 
-      header: "CTR Gain %", 
-      sortable: true,
-      render: (val: number) => `+${val.toFixed(1)}%`
-    },
-    { 
-      key: "estimatedSessions", 
-      header: "Est. Sessions", 
-      sortable: true,
-      render: (val: number) => val.toLocaleString()
-    },
-    { 
-      key: "revenueImpact", 
-      header: "Revenue Impact", 
-      sortable: true,
-      render: (val: number) => `$${val.toLocaleString()}`
-    },
-  ];
+  const ecommerceFootnote = hasEcommerceMetrics
+    ? `Transactions and revenue estimates use the current GA conversion rate (${conversionRatePct.toFixed(
+        2,
+      )}%) and average order value (${standardCurrencyFormatter.format(averageOrderValue)}).`
+    : "Connect an ecommerce-enabled GA property with conversion rate and average order value to unlock transaction and revenue estimates.";
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight">Results Dashboard</h1>
-          <p className="text-muted-foreground mt-1">
-            Comprehensive analysis of opportunity potential and traffic projections
-          </p>
-        </div>
-        <Button className="gap-2" data-testid="button-export-all">
-          <Download className="h-4 w-4" />
-          Export All Results
-        </Button>
+      <div>
+        <h1 className="text-3xl font-bold tracking-tight">Organic Opportunity Results</h1>
+        <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+          These results show at a top level the potential behind each keyword category, and of growth at a per-keyword
+          level. Values here are inferred from recent organic performance and are for illustrative purposes only.
+          <br />
+          <strong className="font-semibold text-foreground">
+            These results should provide guidance on which topics are likely to be most beneficial, and what the uplift
+            is in comparison to current norms.
+          </strong>
+        </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-3">
-        <MetricCard
-          title="Historic Sessions"
-          value="192,000"
-          subtitle="Last 12 months"
-          icon={<TrendingUp className="h-4 w-4" />}
-        />
-        <MetricCard
-          title="Predicted Sessions"
-          value="256,400"
-          trend={{ value: 33.5, direction: "up" }}
-          subtitle="Next 12 months"
-          icon={<Target className="h-4 w-4" />}
-        />
-        <MetricCard
-          title="Uplift Opportunity"
-          value="+64,400"
-          subtitle="From ranking improvements"
-          icon={<Zap className="h-4 w-4" />}
-        />
-      </div>
-
-      <UpliftForecastChart
-        data={mockForecastData}
-        onExport={() => console.log("Export forecast")}
-      />
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <OpportunityBarChart
-          data={mockCategoryData}
-          onCategoryClick={(cat) => console.log("Category:", cat)}
-        />
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Category Summary</CardTitle>
-            <CardDescription>
-              Top opportunities by category with key metrics
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {mockCategoryData.slice(0, 5).map((cat) => (
-                <div key={cat.category} className="flex items-center justify-between">
-                  <div className="space-y-1">
-                    <p className="font-medium">{cat.category}</p>
-                    <p className="text-sm text-muted-foreground">
-                      Est. {cat.estimatedSessions.toLocaleString()} sessions
-                    </p>
-                  </div>
-                  <Badge
-                    variant={cat.opportunityScore >= 80 ? "default" : "secondary"}
-                    className="tabular-nums"
-                  >
-                    Score: {cat.opportunityScore}
-                  </Badge>
-                </div>
-              ))}
+      {isStatusLoading ? (
+        <Card className="border-dashed">
+          <CardContent className="space-y-3 py-10 text-center">
+            <Loader2 className="mx-auto h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
+            <p className="text-sm text-muted-foreground">Checking prerequisite workflow steps...</p>
+          </CardContent>
+        </Card>
+      ) : missingPrerequisites.length > 0 ? (
+        <Card className="border-dashed">
+          <CardContent className="space-y-4 py-8 text-center">
+            <p className="text-sm text-muted-foreground">
+              Complete the earlier workflow steps to unlock the organic results dashboard.
+            </p>
+            <div className="text-sm text-muted-foreground">
+              <span className="font-semibold text-foreground">Still required:</span>{" "}
+              {missingPrerequisites.join(" · ")}
             </div>
           </CardContent>
         </Card>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <div className="flex items-start justify-between">
-            <div>
-              <CardTitle>Keyword-Level Analysis</CardTitle>
-              <CardDescription>
-                Detailed uplift potential for each target keyword
-              </CardDescription>
-            </div>
-            <Button variant="outline" size="sm" className="gap-2" data-testid="button-export-keywords">
-              <Download className="h-4 w-4" />
-              Export
-            </Button>
+      ) : isLoadingGaReport ? (
+        <Card className="border-dashed">
+          <CardContent className="space-y-3 py-10 text-center">
+            <Loader2 className="mx-auto h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
+            <p className="text-sm text-muted-foreground">Fetching Google Analytics metrics…</p>
+          </CardContent>
+        </Card>
+      ) : hasGaReportError || !gaReport ? (
+        <Card className="border border-destructive/50 border-dashed">
+          <CardContent className="space-y-3 py-8 text-center">
+            <p className="font-semibold text-destructive">Unable to retrieve Google Analytics results.</p>
+            <p className="text-sm text-muted-foreground">
+              Return to the Google Analytics step and refresh the property connection to try again.
+            </p>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          <div className="grid gap-4 md:grid-cols-3">
+            {summaryCards.map((card) => (
+              <SummaryCard key={card.title} {...card} />
+            ))}
           </div>
-        </CardHeader>
-        <CardContent>
-          <DataTable
-            data={mockKeywordData}
-            columns={keywordColumns}
-          />
-        </CardContent>
-      </Card>
+          <p className="text-xs text-muted-foreground">{ecommerceFootnote}</p>
+          <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+            <Card className="h-full">
+              <CardHeader>
+                <CardTitle>Monthly Projection</CardTitle>
+                <CardDescription>Monthly sessions, transactions, and revenue outlook.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex h-56 items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
+                  Chart placeholder
+                </div>
+                <div className="grid gap-2 text-sm">
+                  <div className="flex items-center justify-between border-b border-border/50 pb-2">
+                    <span className="font-medium text-foreground">Upcoming Month Summary</span>
+                    <span className="text-muted-foreground">TBD</span>
+                  </div>
+                  <p className="text-muted-foreground">
+                    This section will surface the highlighted metrics for the next months once projections are wired up.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="h-full">
+              <CardHeader>
+                <CardTitle>Opportunity by Keyword Group</CardTitle>
+                <CardDescription>Compare potential impact by keyword category.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex h-56 items-center justify-center rounded-md border border-dashed text-sm text-muted-foreground">
+                  Category chart placeholder
+                </div>
+                <div className="space-y-1 text-sm text-muted-foreground">
+                  <p>Summary insights about the top keyword groups will appear here.</p>
+                  <p>Use this space to call out where the biggest gains are expected.</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>Keyword Potentials</CardTitle>
+              <CardDescription>Detailed keyword-level opportunity table.</CardDescription>
+            </CardHeader>
+            <CardContent className="overflow-x-auto">
+              <table className="w-full min-w-[640px] text-left text-sm">
+                <thead className="text-muted-foreground">
+                  <tr className="border-b border-border/50 text-xs uppercase tracking-wide">
+                    <th className="py-2 pr-4 font-medium">Keyword</th>
+                    <th className="py-2 pr-4 font-medium">Current Rank</th>
+                    <th className="py-2 pr-4 font-medium">Projected Sessions</th>
+                    <th className="py-2 pr-4 font-medium">Projected Transactions</th>
+                    <th className="py-2 pr-4 font-medium">Projected Revenue</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/50">
+                  <tr>
+                    <td className="py-3 pr-4 text-muted-foreground">Keyword placeholder</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                  </tr>
+                  <tr>
+                    <td className="py-3 pr-4 text-muted-foreground">Keyword placeholder</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                  </tr>
+                  <tr>
+                    <td className="py-3 pr-4 text-muted-foreground">Keyword placeholder</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                    <td className="py-3 pr-4 text-muted-foreground">--</td>
+                  </tr>
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+        </>
+      )}
     </div>
   );
 }

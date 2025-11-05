@@ -37,6 +37,21 @@ interface UpliftPersistedState {
 }
 
 const UPLIFT_STORAGE_KEY = "uplift/state";
+const MAX_CATEGORY_SERIES = 10;
+const OTHER_CATEGORY_KEY = "Other";
+const PRISM_PALETTE = [
+  "rgb(95, 70, 144)",
+  "rgb(29, 105, 150)",
+  "rgb(56, 166, 165)",
+  "rgb(15, 133, 84)",
+  "rgb(115, 175, 72)",
+  "rgb(237, 173, 8)",
+  "rgb(225, 124, 5)",
+  "rgb(204, 80, 62)",
+  "rgb(148, 52, 110)",
+  "rgb(111, 64, 112)",
+  "rgb(102, 102, 102)",
+];
 
 function readUpliftStorage(): UpliftPersistedState | null {
   if (typeof window === "undefined") {
@@ -53,6 +68,39 @@ function readUpliftStorage(): UpliftPersistedState | null {
   }
 }
 
+function isQuotaExceededError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const maybeDomError = error as { name?: string; code?: number };
+  const name = maybeDomError.name ?? "";
+  return (
+    name === "QuotaExceededError" ||
+    name === "NS_ERROR_DOM_QUOTA_REACHED" ||
+    maybeDomError.code === 22 ||
+    maybeDomError.code === 1014
+  );
+}
+
+function createResultlessSnapshot(state: UpliftPersistedState): UpliftPersistedState {
+  return {
+    ...state,
+    results: null,
+    lastCalculatedSignature: null,
+  };
+}
+
+function createMinimalSnapshot(state: UpliftPersistedState): UpliftPersistedState {
+  return {
+    ...state,
+    keywordsUploaded: false,
+    availableColumns: [],
+    csvData: [],
+    results: null,
+    lastCalculatedSignature: null,
+  };
+}
+
 function writeUpliftStorage(
   updater: (previous: UpliftPersistedState | null) => UpliftPersistedState | null,
 ): void {
@@ -65,7 +113,59 @@ function writeUpliftStorage(
     window.sessionStorage.removeItem(UPLIFT_STORAGE_KEY);
     return;
   }
-  window.sessionStorage.setItem(UPLIFT_STORAGE_KEY, JSON.stringify(next));
+  const strategies: Array<{
+    state: UpliftPersistedState;
+    onSuccess?: () => void;
+    onQuotaExceededMessage: string;
+  }> = [
+    {
+      state: next,
+      onQuotaExceededMessage:
+        "[Uplift] Persisted session state exceeded sessionStorage quota; attempting to trim payload.",
+    },
+  ];
+
+  if (next.results) {
+    strategies.push({
+      state: createResultlessSnapshot(next),
+      onSuccess: () => {
+        console.warn(
+          "[Uplift] Persisted state stored without detailed projections due to sessionStorage limits.",
+        );
+      },
+      onQuotaExceededMessage:
+        "[Uplift] Persisted state still too large after removing detailed projections; falling back to minimal data.",
+    });
+  }
+
+  strategies.push({
+    state: createMinimalSnapshot(next),
+    onSuccess: () => {
+      console.warn(
+        "[Uplift] Persisted state stored without CSV data due to sessionStorage limits. Keywords must be re-uploaded after refresh.",
+      );
+    },
+    onQuotaExceededMessage:
+      "[Uplift] Persisted state exceeded sessionStorage quota even after trimming to minimal data.",
+  });
+
+  for (const { state, onSuccess, onQuotaExceededMessage } of strategies) {
+    try {
+      window.sessionStorage.setItem(UPLIFT_STORAGE_KEY, JSON.stringify(state));
+      onSuccess?.();
+      return;
+    } catch (error) {
+      if (!isQuotaExceededError(error)) {
+        throw error;
+      }
+      console.warn(onQuotaExceededMessage);
+    }
+  }
+
+  window.sessionStorage.removeItem(UPLIFT_STORAGE_KEY);
+  console.warn(
+    "[Uplift] Failed to persist uplift calculator session state due to storage limits. Session data cleared.",
+  );
 }
 
 export default function UpliftCalculator() {
@@ -153,11 +253,6 @@ export default function UpliftCalculator() {
 
   const percentFormatter = useMemo(() => new Intl.NumberFormat("en-GB", { maximumFractionDigits: 1 }), []);
 
-  const viridisPalette = useMemo(
-    () => ["#440154", "#482878", "#3E4989", "#31688E", "#26828E", "#1F9E89", "#35B779", "#6DCD59", "#B4DE2C", "#FDE725", "#F68F6A", "#9AE5D0"],
-    [],
-  );
-
   const ctrOverrides = useMemo(() => {
     if (!gscReport?.nonBrandCtrByPosition || gscReport.nonBrandCtrByPosition.length === 0) {
       return null;
@@ -181,9 +276,38 @@ export default function UpliftCalculator() {
       totals.set(category, (totals.get(category) ?? 0) + uplift);
     });
     return Array.from(totals.entries())
-      .sort((a, b) => b[1] - a[1])
-      .map(([category]) => category);
+        .sort((a, b) => b[1] - a[1])
+        .map(([category]) => category);
   }, [results?.categoryUpliftByMonth]);
+
+  const topCategoryKeys = useMemo(
+    () => sortedCategoryKeys.slice(0, MAX_CATEGORY_SERIES),
+    [sortedCategoryKeys],
+  );
+
+  const topCategorySet = useMemo(() => new Set(topCategoryKeys), [topCategoryKeys]);
+
+  const categorySeriesKeys = useMemo(() => {
+    if (!results?.categoryUpliftByMonth || results.categoryUpliftByMonth.length === 0) {
+      return [] as string[];
+    }
+    const series = [...topCategoryKeys];
+    if (sortedCategoryKeys.length > MAX_CATEGORY_SERIES) {
+      series.push(OTHER_CATEGORY_KEY);
+    }
+    return series;
+  }, [results?.categoryUpliftByMonth, sortedCategoryKeys, topCategoryKeys]);
+
+  const categoryColorMap = useMemo(() => {
+    const map = new Map<string, string>();
+    topCategoryKeys.forEach((category, index) => {
+      map.set(category, PRISM_PALETTE[index]);
+    });
+    if (sortedCategoryKeys.length > MAX_CATEGORY_SERIES) {
+      map.set(OTHER_CATEGORY_KEY, PRISM_PALETTE[PRISM_PALETTE.length - 1]);
+    }
+    return map;
+  }, [sortedCategoryKeys, topCategoryKeys]);
 
   const parseCSV = async (file: File) => {
     return new Promise<void>((resolve, reject) => {
@@ -604,18 +728,27 @@ export default function UpliftCalculator() {
                 <CardContent>
                   <ResponsiveContainer width="100%" height={300}>
                     <BarChart
-                      data={(() => {
-                        const monthlyData = new Map<string, any>();
-                        results.categoryUpliftByMonth.forEach(item => {
-                          const monthKey = new Date(item.monthStart).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
-                          if (!monthlyData.has(monthKey)) {
-                            monthlyData.set(monthKey, { month: monthKey });
-                          }
-                          monthlyData.get(monthKey)![item.category] = Math.round(item.uplift);
-                        });
-                        return Array.from(monthlyData.values());
-                      })()}
-                    >
+                        data={(() => {
+                          const monthlyData = new Map<string, any>();
+                          results.categoryUpliftByMonth.forEach(item => {
+                            const monthKey = new Date(item.monthStart).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+                            if (!monthlyData.has(monthKey)) {
+                              monthlyData.set(monthKey, { month: monthKey });
+                            }
+                            const bucketKey = topCategorySet.has(item.category) ? item.category : OTHER_CATEGORY_KEY;
+                            const entry = monthlyData.get(monthKey)!;
+                            entry[bucketKey] = (entry[bucketKey] ?? 0) + item.uplift;
+                          });
+                          return Array.from(monthlyData.values()).map(entry => {
+                            categorySeriesKeys.forEach(category => {
+                              if (typeof entry[category] === "number") {
+                                entry[category] = Math.round(entry[category] as number);
+                              }
+                            });
+                            return entry;
+                          });
+                        })()}
+                      >
                       <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                       <XAxis dataKey="month" className="text-xs" />
                       <YAxis className="text-xs" />
@@ -624,17 +757,17 @@ export default function UpliftCalculator() {
                         labelStyle={{ color: 'hsl(var(--foreground))' }}
                       />
                       <Legend />
-                      {(sortedCategoryKeys.length > 0
-                        ? sortedCategoryKeys
-                        : Array.from(new Set(results.categoryUpliftByMonth.map(item => item.category)))
-                      ).map((category, i) => (
-                        <Bar
-                          key={category}
-                          dataKey={category}
-                          stackId="a"
-                          fill={viridisPalette[i % viridisPalette.length]}
-                        />
-                      ))}
+                        {(categorySeriesKeys.length > 0
+                          ? categorySeriesKeys
+                          : Array.from(new Set(results.categoryUpliftByMonth.map(item => item.category))))
+                          .map((category, index) => (
+                            <Bar
+                              key={category}
+                              dataKey={category}
+                              stackId="a"
+                              fill={categoryColorMap.get(category) ?? PRISM_PALETTE[index % MAX_CATEGORY_SERIES]}
+                            />
+                          ))}
                     </BarChart>
                   </ResponsiveContainer>
                 </CardContent>
@@ -687,9 +820,9 @@ export default function UpliftCalculator() {
 
               {results && !calculateMutation.isPending && (
                 <div className="flex justify-end pt-6">
-                  <Button
-                    size="lg"
-                    onClick={() => navigate("/prophet")}
+                    <Button
+                      size="lg"
+                      onClick={() => navigate("/results")}
                     className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 animate-cta-pulse gap-2 border-0"
                   >
                     <span className="material-symbols-outlined text-xl" aria-hidden="true">
@@ -710,21 +843,23 @@ export default function UpliftCalculator() {
                 <CardContent>
                   <button
                     onClick={() => {
-                      const csv = [
-                        ["Keyword", "Volume", "Difficulty", "Start Rank", "Month", "Predicted Rank", "Expected CTR", "Expected Visits", "Baseline Visits", "Uplift"],
-                        ...results.detailedProjections.map(p => [
-                          p.keyword,
-                          p.volume,
-                          p.difficulty,
-                          p.startRank,
-                          p.monthStart,
-                          p.predRank,
-                          p.expCtr,
-                          p.expVisits,
-                          p.baselineVisits,
-                          p.expUplift,
-                        ])
-                      ].map(row => row.join(',')).join('\n');
+                        const csv = [
+                          ["Keyword", "Volume", "Difficulty", "Start Rank", "Month", "Predicted Rank", "Expected CTR", "Expected Visits", "Baseline Visits", "Uplift", "Quick Win", "Opportunity Score"],
+                          ...results.detailedProjections.map(p => [
+                            p.keyword,
+                            p.volume,
+                            p.difficulty,
+                            p.startRank,
+                            p.monthStart,
+                            p.predRank,
+                            p.expCtr,
+                            p.expVisits,
+                            p.baselineVisits,
+                            p.expUplift,
+                            p.quickWin ? "TRUE" : "FALSE",
+                            p.opportunityScore,
+                          ])
+                        ].map(row => row.join(',')).join('\n');
                       
                       const blob = new Blob([csv], { type: 'text/csv' });
                       const url = URL.createObjectURL(blob);
