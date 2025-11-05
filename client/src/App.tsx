@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Switch, Route, useLocation } from "wouter";
 import Landing from "@/pages/Landing";
 import GoogleAnalytics from "@/pages/GoogleAnalytics";
@@ -21,6 +22,16 @@ import {
 
 function Router() {
   const [location] = useLocation();
+  const mainRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    }
+    if (mainRef.current) {
+      mainRef.current.scrollTo({ top: 0, left: 0, behavior: "auto" });
+    }
+  }, [location]);
 
   const steps = [
     { id: "ga", title: "Google Analytics", icon: AreaChart, path: "/ga", completed: false },
@@ -54,7 +65,7 @@ function Router() {
           <header className="flex items-center justify-between px-6 py-4 border-b bg-background">
             <SidebarTrigger data-testid="button-sidebar-toggle" />
           </header>
-          <main className="flex-1 overflow-auto">
+          <main ref={mainRef} className="flex-1 overflow-auto">
             <div className="container max-w-7xl mx-auto px-6 py-8">
               <Switch>
                 <Route path="/ga" component={GoogleAnalytics} />

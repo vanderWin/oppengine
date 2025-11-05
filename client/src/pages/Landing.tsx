@@ -1,3 +1,4 @@
+import { useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { CheckCircle } from "lucide-react";
@@ -9,6 +10,19 @@ import {
 } from "@nine-thirty-five/material-symbols-react/outlined";
 
 export default function Landing() {
+  const handleGetStarted = useCallback(async () => {
+    try {
+      await fetch("/api/report/session-start", {
+        method: "POST",
+        credentials: "include",
+      });
+    } catch (error) {
+      console.warn("Failed to record report session start", error);
+    } finally {
+      window.location.href = "/ga";
+    }
+  }, []);
+
   const features = [
     {
       icon: AreaChart,
@@ -61,7 +75,7 @@ export default function Landing() {
             <Button
               size="lg"
               className="bg-emerald-500 hover:bg-emerald-600 text-white shadow-lg shadow-emerald-500/30 animate-cta-pulse gap-2 text-lg px-8 py-6 border-0 focus-visible:ring-emerald-500"
-              onClick={() => window.location.href = "/ga"}
+              onClick={handleGetStarted}
               data-testid="button-get-started"
             >
               Get Started

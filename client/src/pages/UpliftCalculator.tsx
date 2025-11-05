@@ -34,6 +34,7 @@ interface UpliftPersistedState {
   currentParameters: UpliftParameters | null;
   searchVolumeRegion?: SearchVolumeRegion;
   lastCalculatedSignature?: string | null;
+  uploadedFileName?: string | null;
 }
 
 const UPLIFT_STORAGE_KEY = "uplift/state";
@@ -98,6 +99,7 @@ function createMinimalSnapshot(state: UpliftPersistedState): UpliftPersistedStat
     csvData: [],
     results: null,
     lastCalculatedSignature: null,
+    uploadedFileName: null,
   };
 }
 
@@ -176,6 +178,7 @@ export default function UpliftCalculator() {
     queryClient.getQueryData<UpliftPersistedState>(["uplift/state"]) ?? rehydratedState ?? null;
   const [keywordsUploaded, setKeywordsUploaded] = useState(cachedState?.keywordsUploaded ?? false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
+  const [uploadedFileName, setUploadedFileName] = useState<string | null>(cachedState?.uploadedFileName ?? null);
   const [csvData, setCsvData] = useState<any[]>(cachedState?.csvData ?? []);
   const [availableColumns, setAvailableColumns] = useState<string[]>(cachedState?.availableColumns ?? []);
   const [results, setResults] = useState<ProjectionResults | null>(cachedState?.results ?? null);
@@ -338,6 +341,7 @@ export default function UpliftCalculator() {
           setAvailableColumns(results.meta.fields);
           setCsvData(results.data);
           setKeywordsUploaded(true);
+          setUploadedFileName(file.name);
 
           toast({
             title: "File uploaded successfully",
@@ -361,14 +365,16 @@ export default function UpliftCalculator() {
   type CalculationPayload = {
     parameters: UpliftParameters;
     searchVolumeRegion: SearchVolumeRegion;
+    csvFileName?: string | null;
   };
 
   const calculateMutation = useMutation<ProjectionResults, Error, CalculationPayload>({
-    mutationFn: async ({ parameters, searchVolumeRegion }: CalculationPayload) => {
+    mutationFn: async ({ parameters, searchVolumeRegion, csvFileName }: CalculationPayload) => {
       const response = await apiRequest("POST", "/api/uplift/calculate", {
         csvData,
         parameters,
         searchVolumeRegion,
+        csvFileName: csvFileName ?? null,
       });
       return (await response.json()) as ProjectionResults;
     },
@@ -415,9 +421,21 @@ export default function UpliftCalculator() {
     if (lastCalculatedParams.current !== paramsSignature) {
       lastCalculatedParams.current = paramsSignature;
       hasCalculatedOnce.current = true;
-      calculateMutation.mutate({ parameters: currentParameters, searchVolumeRegion });
+      calculateMutation.mutate({
+        parameters: currentParameters,
+        searchVolumeRegion,
+        csvFileName: uploadedFileName ?? uploadedFile?.name ?? null,
+      });
     }
-  }, [csvData, currentParameters, searchVolumeRegion, calculateMutation, calculateMutation.isPending]);
+  }, [
+    csvData,
+    currentParameters,
+    searchVolumeRegion,
+    calculateMutation,
+    calculateMutation.isPending,
+    uploadedFileName,
+    uploadedFile,
+  ]);
 
   // Memoize callback to prevent infinite loops
   const handleParametersChange = useCallback((params: UpliftParameters) => {
@@ -439,6 +457,7 @@ export default function UpliftCalculator() {
       currentParameters,
       searchVolumeRegion,
       lastCalculatedSignature: lastCalculatedParams.current,
+      uploadedFileName,
     };
     queryClient.setQueryData<UpliftPersistedState>(["uplift/state"], snapshot);
     writeUpliftStorage(() => snapshot);
@@ -450,6 +469,7 @@ export default function UpliftCalculator() {
     results,
     currentParameters,
     searchVolumeRegion,
+    uploadedFileName,
   ]);
 
   return (
@@ -478,11 +498,11 @@ export default function UpliftCalculator() {
                 }}
                 formats={["CSV"]}
               />
-              {keywordsUploaded && uploadedFile && (
+              {keywordsUploaded && (uploadedFile || uploadedFileName) && (
                 <div className="mt-4 space-y-2">
                   <div className="flex items-center gap-2 text-sm text-success">
                     <CheckCircle className="h-4 w-4" />
-                    File uploaded: {uploadedFile.name}
+                    File uploaded: {uploadedFile?.name ?? uploadedFileName}
                   </div>
                   <p className="text-xs text-muted-foreground">
                     {csvData.length} keywords, {availableColumns.length} columns
@@ -843,12 +863,13 @@ export default function UpliftCalculator() {
                 <CardContent>
                   <button
                     onClick={() => {
-                        const csv = [
-                          ["Keyword", "Volume", "Difficulty", "Start Rank", "Month", "Predicted Rank", "Expected CTR", "Expected Visits", "Baseline Visits", "Uplift", "Quick Win", "Opportunity Score"],
+                      const csv = [
+                          ["Keyword", "Volume", "Difficulty", "Main Category", "Start Rank", "Month", "Predicted Rank", "Expected CTR", "Expected Visits", "Baseline Visits", "Uplift", "Quick Win", "Opportunity Score"],
                           ...results.detailedProjections.map(p => [
                             p.keyword,
                             p.volume,
                             p.difficulty,
+                            p.mainCategory ?? "",
                             p.startRank,
                             p.monthStart,
                             p.predRank,

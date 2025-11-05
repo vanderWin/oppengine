@@ -8,6 +8,12 @@ import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import type { GAReportResponse, GSCReportResponse } from "@shared/schema";
+import type {
+  CombinedSessionsDatum,
+  ProphetForecastResponse,
+  ProphetStoredResults,
+  ScalingSummarySnapshot,
+} from "@shared/prophetTypes";
 import {
   Area,
   Bar,
@@ -40,26 +46,6 @@ interface GoogleStatus {
   };
 }
 
-interface ForecastPoint {
-  date: string;
-  yhat: number;
-  yhat_lower: number;
-  yhat_upper: number;
-}
-
-interface ForecastSeries {
-  forecast: ForecastPoint[];
-  last_observed: string;
-  forecast_end: string;
-}
-
-interface ProphetForecastResponse {
-  brand: ForecastSeries;
-  nonBrand: ForecastSeries;
-  monthsAhead: number;
-  generatedAt: string;
-}
-
 interface ForecastQueryKey {
   monthsAhead: number;
   brandTrend: TrendOption;
@@ -75,32 +61,6 @@ interface ProphetControlsState {
   nonBrandTrend: TrendOption;
   brandMultiplier: number;
   nonBrandMultiplier: number;
-}
-
-interface CombinedSessionsDatum {
-  date: string;
-  monthKey: string;
-  actualSessions: number;
-  scaledBrand: number;
-  scaledNonBrand: number;
-  isForecast: boolean;
-}
-
-interface ScalingSummarySnapshot {
-  quantifiableClicks: number;
-  ninetyDaySessions: number;
-  brandClicks: number;
-  nonBrandClicks: number;
-  gap: number;
-  shortfallPercent: number;
-  scaleFactor: number;
-  isReady: boolean;
-}
-
-interface ProphetStoredResults {
-  forecast: ProphetForecastResponse | null;
-  scalingSummary: ScalingSummarySnapshot;
-  combinedSessions: CombinedSessionsDatum[];
 }
 
 interface ProphetPersistedState {
